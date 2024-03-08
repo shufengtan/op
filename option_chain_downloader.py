@@ -3,6 +3,7 @@ import os
 import re
 import time
 from multiprocessing import Process
+from subprocess import getoutput
 import pandas as pd
 from datetime import datetime, timedelta
 from pandas.tseries.offsets import BDay
@@ -44,6 +45,7 @@ class OptionChainDownloader(object):
                 os.mkdir(d)
         self.cookie_file = cookie_file
         self.days = days
+        self.sym_proc = {}
 
     def read_cookie(self):
         with open(self.cookie_file) as fo:
@@ -63,6 +65,8 @@ class OptionChainDownloader(object):
         session.cookies.update(self.cookie)
         resp = session.get(url)
         if resp.status_code != 200:
+            with open('COOKIE_EXPIRED', 'w') as wfo:
+                wfo.write('\n')
             return
         data_file = os.path.join(self.data_dir, symbol)
         with open(data_file, 'w') as wfo:
@@ -70,22 +74,39 @@ class OptionChainDownloader(object):
         return resp.text
 
     def parallel_get_data(self, symbol_list, rps=1):
-        sym_proc = {}
         wait_time = 1.0/rps
         for symbol in symbol_list:
+            if os.path.exists('COOKIE_EXPIRED'):
+                print('COOKIE_EXPIRED')
+                break
             t0 = time.perf_counter()
             proc = Process(target=self.get_slo_chain_data, args=(symbol,))
-            sym_proc[symbol] = proc
+            self.sym_proc[symbol] = proc
             proc.start()
             et = time.perf_counter() - t0
             if et >= wait_time:
                 print(f'.', end=' ')
             else:
                 time.sleep(wait_time - et)
-        return len(symbol_list)
+        return
 
     def count_zombies(self):
         return len([x for x in getoutput(f'/usr/bin/ps --ppid {os.getpid()} -oargs').splitlines() if x.find('<defunct>') > 0])
+
+    def kill_zombies(self):
+        symbol_list = list(self.sym_proc.keys())
+        n_alive = 0
+        killed = 0
+        for symbol in symbol_list:
+            proc = self.sym_proc[symbol]
+            if proc.is_alive():
+                n_alive += 1
+            elif proc.exitcode is not None:
+                proc.join(0.1)
+                proc.close()
+                killed += 1
+                self.sym_proc.pop(symbol)
+        print(f'killed {killed} zombies, left {n_alive} children alive.')
 
     def create_option_chain_df(self, symbol):
         data_file = os.path.join(self.data_dir, symbol)
