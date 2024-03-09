@@ -44,15 +44,23 @@ class OptionChainDownloader(object):
             if not os.path.exists(d):
                 os.mkdir(d)
         self.cookie_file = cookie_file
+        self.cookie_time = 0
         self.days = days
         self.sym_proc = {}
+        self.abort_signal_file = cookie_file + '.expired'
 
     def read_cookie(self):
-        with open(self.cookie_file) as fo:
-            text = fo.read().rstrip().split('; ')
-            cookie = dict([tuple(x.split('=', 1)) for x in text])
-            self.cookie = cookie
-            return cookie
+        _cookie_time = os.path.getmtime(self.cookie_file)
+        if _cookie_time > self.cookie_time:
+            with open(self.cookie_file) as fo:
+                text = fo.read().rstrip().split('; ')
+                cookie = dict([tuple(x.split('=', 1)) for x in text])
+                self.cookie = cookie
+                self.cookie_time = _cookie_time
+            if os.path.exists(self.abort_signal_file) and os.path.getmtime(self.abort_signal_file) < _cookie_time:
+                os.unlink(self.abort_signal_file)
+        else:
+            print('Need new cookie')
 
     def get_slo_chain_data(self, symbol):
         days = self.days
@@ -65,8 +73,8 @@ class OptionChainDownloader(object):
         session.cookies.update(self.cookie)
         resp = session.get(url)
         if resp.status_code != 200:
-            with open('COOKIE_EXPIRED', 'w') as wfo:
-                wfo.write('\n')
+            with open(self.abort_signal_file, 'w') as wfo:
+                wfo.write(f'{resp.status_code}')
             return
         data_file = os.path.join(self.data_dir, symbol)
         with open(data_file, 'w') as wfo:
@@ -76,8 +84,9 @@ class OptionChainDownloader(object):
     def parallel_get_data(self, symbol_list, rps=1):
         wait_time = 1.0/rps
         for symbol in symbol_list:
-            if os.path.exists('COOKIE_EXPIRED'):
-                print('COOKIE_EXPIRED')
+            if os.path.exists(self.abort_signal_file):
+                with open(self.abort_signal_file) as fo:
+                    print(fo.read())
                 break
             t0 = time.perf_counter()
             proc = Process(target=self.get_slo_chain_data, args=(symbol,))
@@ -107,35 +116,6 @@ class OptionChainDownloader(object):
                 killed += 1
                 self.sym_proc.pop(symbol)
         print(f'killed {killed} zombies, left {n_alive} children alive.')
-
-    def create_option_chain_df(self, symbol):
-        data_file = os.path.join(self.data_dir, symbol)
-        with open(data_file) as fo:
-            option_chains = json.load(fo)
-        cnp_list = option_chains['callsAndPuts']
-        for cnp in cnp_list:
-            exp_data_key = 'expirationData'
-            if exp_data_key in cnp:
-                exp_data = cnp.pop(exp_data_key)
-                for k, v in exp_data.items():
-                    if k == 'date':
-                        cnp['expirationDate'] = v #datetime.strptime(v, '%b %d %Y').date()
-                    else:
-                        cnp[k] = v
-        df = pd.DataFrame(cnp_list)
-        for col in ['callSelection', 'putSelection', 'contractType', 'expirationDate', 'optionPeriodicity', 'settlementType']:
-            df[col] = df[col].astype(str)
-        for col in ['strike', 'callLast', 'callChange', 'callBid', 'callBidSize', 'callAsk',
-           'callAskSize', 'callVolume', 'callOpenInterest',
-           'callTimeValue', 'callImpliedVolatility', 'callIntrinsicValue',
-           'callDelta', 'callGamma', 'callTheta', 'callVega', 'callRho', 'putLast',
-           'putChange', 'putBid', 'putBidSize', 'putAsk', 'putAskSize',
-           'putVolume', 'putOpenInterest', 'putTimeValue',
-           'putImpliedVolatility', 'putIntrinsicValue', 'putDelta', 'putGamma',
-           'putTheta', 'putVega', 'putRho',
-           'daysToExpiration']:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-        return df
 
     def download_option_chain(self, symbol_list, days=120, batch_size=10, rps=1):
         for idx in range(0, len(symbol_list), batch_size):
