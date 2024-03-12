@@ -1,5 +1,6 @@
 import requests
 import os
+import sys
 import re
 import time
 from multiprocessing import Process
@@ -37,10 +38,11 @@ def list_option_strike_days(days=365):
     return mm_dd_yyyy, mmm_dd_yyyy_w
 
 class OptionChainDownloader(object):
-    def __init__(self, data_dir, output_dir, cookie_file, days=100):
-        self.data_dir = data_dir
-        self.output_dir = output_dir
-        for d in (data_dir, output_dir):
+    api_url = 'https://digital.fidelity.com/ftgw/digital/options-research/api'
+    def __init__(self, chain_dir, quotes_dir, cookie_file, days=100):
+        self.chain_dir = chain_dir
+        self.quotes_dir = quotes_dir
+        for d in (chain_dir, quotes_dir):
             if not os.path.exists(d):
                 os.mkdir(d)
         self.cookie_file = cookie_file
@@ -59,13 +61,15 @@ class OptionChainDownloader(object):
                 self.cookie_time = _cookie_time
             if os.path.exists(self.abort_signal_file) and os.path.getmtime(self.abort_signal_file) < _cookie_time:
                 os.unlink(self.abort_signal_file)
+            return True
         else:
-            print('Need new cookie')
+            sys.stderr.write('x')
+            return False
 
     def get_slo_chain_data(self, symbol):
         days = self.days
         expiration_dates, settlement_types = list_option_strike_days(days)
-        url = 'https://digital.fidelity.com/ftgw/digital/options-research/api/slo-chain?strikes=All&adjustedOptionsData=true'
+        url = self.api_url + '/slo-chain?strikes=All&adjustedOptionsData=true'
         url += '&symbol=' + symbol
         url += '&expirationDates=' + ','.join(expiration_dates)
         url += '&settlementTypes=' + ','.join(settlement_types).replace(' ', '%20')
@@ -76,8 +80,22 @@ class OptionChainDownloader(object):
             with open(self.abort_signal_file, 'w') as wfo:
                 wfo.write(f'{resp.status_code}')
             return
-        data_file = os.path.join(self.data_dir, symbol)
-        with open(data_file, 'w') as wfo:
+        chain_file = os.path.join(self.chain_dir, symbol)
+        with open(chain_file, 'w') as wfo:
+            wfo.write(resp.text)
+        return resp.text
+
+    def get_quotes(self, symbol):
+        url = self.api_url + '/quotes?symbols=' + symbol
+        session = requests.Session()
+        session.cookies.update(self.cookie)
+        resp = session.get(url)
+        if resp.status_code != 200:
+            with open(self.abort_signal_file, 'w') as wfo:
+                wfo.write(f'{resp.status_code}')
+            return
+        quotes_file = os.path.join(self.quotes_dir, symbol)
+        with open(quotes_file, 'w') as wfo:
             wfo.write(resp.text)
         return resp.text
 
@@ -88,15 +106,16 @@ class OptionChainDownloader(object):
                 with open(self.abort_signal_file) as fo:
                     print(fo.read())
                 break
-            t0 = time.perf_counter()
-            proc = Process(target=self.get_slo_chain_data, args=(symbol,))
-            self.sym_proc[symbol] = proc
-            proc.start()
-            et = time.perf_counter() - t0
-            if et >= wait_time:
-                print(f'.', end=' ')
-            else:
-                time.sleep(wait_time - et)
+            for target in [self.get_slo_chain_data, self.get_quotes]:
+                t0 = time.perf_counter()
+                proc = Process(target=target, args=(symbol,))
+                self.sym_proc[symbol] = proc
+                proc.start()
+                et = time.perf_counter() - t0
+                if et >= wait_time:
+                    sys.stderr.write('.')
+                else:
+                    time.sleep(wait_time - et)
         return
 
     def count_zombies(self):
@@ -122,10 +141,10 @@ class OptionChainDownloader(object):
             self.parallel_get_data(symbol_list[idx:idx+batch_size], rps)
 
 if __name__ == '__main__':
-    data_dir = 'json'
-    output_dir = 'op'
-    cookie_file = 'slo-chain-cookie.txt'
-    ocd = OptionChainDownloader(data_dir, output_dir, cookie_file, days=100)
+    chain_dir = 'chain'
+    quotes_dir = 'quotes'
+    cookie_file = 'cookie.txt'
+    ocd = OptionChainDownloader(chain_dir, output_dir, cookie_file, days=100)
     cookie = ocd.read_cookie()
     symbol_list = 'QQQ SPY NVDA MSFT META'.split(' ')
     ocd.download_option_chain(symbol_list, 120, 10, rps=10)
