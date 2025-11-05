@@ -36,17 +36,16 @@ class OptionFinder(object):
         self.max_file_age = max_file_age
         self.last_price = {}
         self.last_mtime = {}
-        self.call_filter = lambda r: (1 <= r.dte <= 56) and r.Bid > 0 and r.OpenInterest > 0 and r.strike  > r.lastPrice
-        self.put_filter  = lambda r: (1 <= r.dte <= 56) and r.Bid > 0 and r.OpenInterest > 0 and r.strike  < r.lastPrice
 
     def get_quote_df(self, symlist):
+        '''Updates self.last_price and returns three dataframes: quote, short interest, volatility'''
         dod = []
         dod_s = {}
         log = self.logger
         for symbol in symlist:
             quote_file = os.path.join(self.quotes_dir, symbol)
             if not os.path.exists(quote_file):
-                log.warning(f'No quote for {symbol}')
+                log.warning(f'get_quote_df: quote file for {symbol} not found.')
                 continue
             with open(quote_file) as fo:
                 try:
@@ -173,7 +172,7 @@ class OptionFinder(object):
         df['symbol'] = symbol
         last_price, quote_dt = self.last_price.get(symbol, (None, None))
         if last_price is None:
-            log.warning(f'Failed to get last_price of {symbol}')
+            log.warning(f'create_option_chain_df failed to get last_price of {symbol}')
         else:
             df['lastPrice'] = last_price
             df['quote_dt'] = quote_dt
@@ -192,9 +191,9 @@ class OptionFinder(object):
         else:
             return []
 
-    def search_put_options(self, df):
+    def search_put_options(self, df, dte_ub=56):
         report_dir = self.report_dir
-        put_filter = self.put_filter
+        put_filter = lambda r: (1 <= r.dte <= dte_ub) and r.Bid > 0 and r.OpenInterest > 0 and r.strike  < r.lastPrice
         res = []
         delta_ranges = [(-0.20, 0), (-0.4, -0.20), (-0.5, -0.4)]
         for min_delta, max_delta in delta_ranges:
@@ -224,9 +223,9 @@ class OptionFinder(object):
         self.logger.info(f'search_put_options saved {html_file}')
         return res
 
-    def search_call_options(self, df):
+    def search_call_options(self, df, dte_ub=56):
         report_dir = self.report_dir
-        call_filter = self.call_filter
+        call_filter = lambda r: (1 <= r.dte <= dte_ub) and r.Bid > 0 and r.OpenInterest > 0 and r.strike  > r.lastPrice
         res = []
         delta_ranges = [(0, 0.2), (0.2, 0.4), (0.4, 0.5)]
         for symbol in df.symbol.unique():
@@ -254,7 +253,32 @@ class OptionFinder(object):
         _df = df.loc[:, ['_', call_or_put, '__']]
         _df.columns = [c[1] for c in _df.columns]
         return _df
-        
+
+    def concat_put_call_options(self, df):
+        ignored_cols = ['pctProfit', 'Last', 'Change', 'TimeValue', 'IntrinsicValue']
+        _dfc = df.call.drop(columns=ignored_cols)
+        _dfc = pd.concat([df._, _dfc], axis=1)
+        _dfc['type'] = 'C'
+        _dfp = df.put.drop(columns=ignored_cols)
+        _dfp = pd.concat([df._, _dfp], axis=1)
+        _dfp['type'] = 'P'
+        return pd.concat([_dfc, _dfp])
+
+    def overall_put_call_ratios(self, df, dte_range=None):
+        if dte_range is not None:
+            df = df[(df.dte >= dte_range[0]) & (df.dte <= dte_range[1])]
+        values = ['Volume', 'OpenInterest']
+        p = df.pivot_table(index='symbol', columns='type', values=values, aggfunc='sum', observed=True, fill_value=0)
+        return pd.DataFrame(dict([(_v, p.loc[:, (_v, 'P')]/p.loc[:, (_v, 'C')]) for _v in values]))
+
+    def put_call_ratios_by_moneyness(self, df, value='Volume', atm_range=[0.99, 1.01]):
+        df['moneyness'] = df['strike'] / df['lastPrice']
+        bins = [0, 0.9, atm_range[0], atm_range[1], 1.10, np.inf]
+        labels = ['deep_otm_put', 'otm_put', 'atm', 'otm_call', 'deep_otm_call']
+        df['cluster'] = pd.cut(df['moneyness'], bins=bins, labels=labels)
+        pivot = df.pivot_table(index=['symbol', 'cluster'], columns='type', values=value, aggfunc='sum', observed=True, fill_value=0)
+        return pd.DataFrame({'put_call_ratio': pivot['P'] / pivot['C']}).unstack(level=1)
+
     def process_data(self, symlist):
         log = self.logger
         df_q, df_s, df_v = self.get_quote_df(symlist)
@@ -267,7 +291,7 @@ class OptionFinder(object):
             log.info(f'process_data: search_call_options df_call {df_call.shape}')
             call_res = self.search_call_options(df_call)
             df_put  = self.separate_df(df, 'put')
-            log.info(f'process_data: search_put_option df_put {df_put.shape}')
+            log.info(f'process_data: search_put_options df_put {df_put.shape}')
             put_res  = self.search_put_options(df_put)
         return df
 
