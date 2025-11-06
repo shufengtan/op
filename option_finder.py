@@ -259,9 +259,11 @@ class OptionFinder(object):
         _dfc = df.call.drop(columns=ignored_cols)
         _dfc = pd.concat([df._, _dfc], axis=1)
         _dfc['type'] = 'C'
+        _dfc['mid'] = (_dfc.Bid + _dfc.Ask)/2
         _dfp = df.put.drop(columns=ignored_cols)
         _dfp = pd.concat([df._, _dfp], axis=1)
         _dfp['type'] = 'P'
+        _dfp['mid'] = (_dfp.Bid + _dfp.Ask)/2
         return pd.concat([_dfc, _dfp])
 
     def overall_put_call_ratios(self, df, dte_range=None):
