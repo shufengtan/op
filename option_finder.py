@@ -255,7 +255,7 @@ class OptionFinder(object):
         return _df
 
     def concat_put_call_options(self, df):
-        ignored_cols = ['pctProfit', 'Last', 'Change', 'TimeValue', 'IntrinsicValue']
+        ignored_cols = ['pctProfit', 'Last', 'TimeValue', 'IntrinsicValue']
         _dfc = df.call.drop(columns=ignored_cols)
         _dfc = pd.concat([df._, _dfc], axis=1)
         _dfc['type'] = 'C'
@@ -273,13 +273,18 @@ class OptionFinder(object):
         p = df.pivot_table(index='symbol', columns='type', values=values, aggfunc='sum', observed=True, fill_value=0)
         return pd.DataFrame(dict([(_v, p.loc[:, (_v, 'P')]/p.loc[:, (_v, 'C')]) for _v in values]))
 
-    def put_call_ratios_by_moneyness(self, df, value='Volume', atm_range=[0.99, 1.01]):
+    def add_moneyness_columns(self, df, atm_offset=0.01, otm_offset=0.1):
         df['moneyness'] = df['strike'] / df['lastPrice']
-        bins = [0, 0.9, atm_range[0], atm_range[1], 1.10, np.inf]
+        bins = [0, 1-otm_offset, 1 - atm_offset, 1 + atm_offset, 1 + otm_offset, np.inf]
         labels = ['deep_otm_put', 'otm_put', 'atm', 'otm_call', 'deep_otm_call']
         df['cluster'] = pd.cut(df['moneyness'], bins=bins, labels=labels)
-        pivot = df.pivot_table(index=['symbol', 'cluster'], columns='type', values=value, aggfunc='sum', observed=True, fill_value=0)
-        return pd.DataFrame({'put_call_ratio': pivot['P'] / pivot['C']}).unstack(level=1)
+        return df
+
+    def put_call_ratios_by_moneyness(self, df, metric='Volume', by_dte=True):
+        # Assume df already has moneyness cluster, option type
+        idx_cols = ['symbol', 'dte', 'cluster'] if by_dte else ['symbol', 'cluster']
+        pivot = df.pivot_table(index=idx_cols, columns='type', values=metric, aggfunc='sum', observed=True, fill_value=0)
+        return pd.DataFrame({'put_call_ratio': pivot['P'] / pivot['C']}).unstack(level=2 if by_dte else 1).put_call_ratio
 
     def process_data(self, symlist):
         log = self.logger
@@ -424,7 +429,7 @@ class OptionFinder(object):
         _df = _df[(_df.Bid > 0)].rename(columns={'expirationDate': 'expDt', 'ImpliedVolatility': 'ImpVola'})
         _df['expDt'] = pd.to_datetime(_df.expDt).dt.strftime('%F')
         _df['mid'] = (_df.Bid + _df.Ask)/2
-        selected_cols = ['symbol', 'expDt', 'strike', 'dte', 'mid', 'pctSpread', 'lastPrice', 'Delta', 'Gamma', 'Theta', 'Vega', 'BidSize', 'AskSize', 'ImpVola', 'OpenInterest', 'load_dt']
+        selected_cols = ['symbol', 'expDt', 'strike', 'dte', 'mid', 'pctSpread', 'lastPrice', 'Delta', 'Gamma', 'Theta', 'Vega', 'Volume', 'BidSize', 'AskSize', 'ImpVola', 'OpenInterest', 'load_dt']
         neglected_cols = [c for c in _df.columns if c not in selected_cols]
         print('sort_leaps_df neglected columns:', neglected_cols)
         _df = _df.loc[:, selected_cols]
