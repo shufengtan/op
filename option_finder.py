@@ -273,19 +273,6 @@ class OptionFinder(object):
         p = df.pivot_table(index='symbol', columns='type', values=values, aggfunc='sum', observed=True, fill_value=0)
         return pd.DataFrame(dict([(_v, p.loc[:, (_v, 'P')]/p.loc[:, (_v, 'C')]) for _v in values]))
 
-    def add_moneyness_columns(self, df, atm_offset=0.01, otm_offset=0.1):
-        df['moneyness'] = df['strike'] / df['lastPrice']
-        bins = [0, 1-otm_offset, 1 - atm_offset, 1 + atm_offset, 1 + otm_offset, np.inf]
-        labels = ['deep_otm_put', 'otm_put', 'atm', 'otm_call', 'deep_otm_call']
-        df['cluster'] = pd.cut(df['moneyness'], bins=bins, labels=labels)
-        return df
-
-    def put_call_ratios_by_moneyness(self, df, metric='Volume', by_dte=True):
-        # Assume df already has moneyness cluster, option type
-        idx_cols = ['symbol', 'dte', 'cluster'] if by_dte else ['symbol', 'cluster']
-        pivot = df.pivot_table(index=idx_cols, columns='type', values=metric, aggfunc='sum', observed=True, fill_value=0)
-        return pd.DataFrame({'put_call_ratio': pivot['P'] / pivot['C']}).unstack(level=2 if by_dte else 1).put_call_ratio
-
     def process_data(self, symlist):
         log = self.logger
         df_q, df_s, df_v = self.get_quote_df(symlist)
