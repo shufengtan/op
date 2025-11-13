@@ -255,16 +255,27 @@ class OptionFinder(object):
         return _df
 
     def concat_put_call_options(self, df):
-        ignored_cols = ['pctProfit', 'Last', 'TimeValue', 'IntrinsicValue']
-        _dfc = df.call.drop(columns=ignored_cols)
-        _dfc = pd.concat([df._, _dfc], axis=1)
-        _dfc['type'] = 'C'
-        _dfc['mid'] = (_dfc.Bid + _dfc.Ask)/2
-        _dfp = df.put.drop(columns=ignored_cols)
-        _dfp = pd.concat([df._, _dfp], axis=1)
-        _dfp['type'] = 'P'
-        _dfp['mid'] = (_dfp.Bid + _dfp.Ask)/2
-        return pd.concat([_dfc, _dfp])
+        ignored_cols = ['pctProfit', 'Change', 'Last', 'BidSize', 'AskSize', 'TimeValue', 'IntrinsicValue']
+
+        dfc = pd.concat([df._, df.call, df.__.loc[:, ['expirationDate']]], axis=1)
+        dfc_cols = dfc.columns
+        dfc = dfc.drop(columns=[c for c in ignored_cols if c in dfc_cols])
+        dfc['type'] = 'C'
+        dfc['mid'] = (dfc.Bid + dfc.Ask)/2
+        dfc['overpaid'] = (dfc.strike + dfc.mid)/dfc.lastPrice - 1
+
+        dfp = pd.concat([df._, df.put,  df.__.loc[:, ['expirationDate']]], axis=1)
+        dfp_cols = dfp.columns
+        dfp = dfp.drop(columns=[c for c in ignored_cols if c in dfp_cols])
+        dfp['type'] = 'P'
+        dfp['mid'] = (dfp.Bid + dfp.Ask)/2
+        dfp['overpaid'] = (dfp.strike - dfp.mid)/dfp.lastPrice - 1
+
+        dfcp = pd.concat([dfc, dfp]).drop(columns=['Bid', 'Ask'])
+        dfcp = dfcp.rename(columns={'expirationDate': 'expDt', 'ImpliedVolatility': 'ImpVola'})
+        dfcp['expDt'] = pd.to_datetime(dfcp.expDt).dt.strftime('%F')
+        dfcp['leverage'] = dfcp.lastPrice/dfcp.mid*dfcp.Delta
+        return dfcp
 
     def overall_put_call_ratios(self, df, dte_range=None):
         if dte_range is not None:
@@ -411,17 +422,6 @@ class OptionFinder(object):
                 cache_csv_file = '~'.join(tmp_csv_file.split('~')[:-1])
                 os.rename(tmp_csv_file, cache_csv_file)
         return cache_csv_file
-
-    def sort_leaps_df(self, _df):
-        _df = _df[(_df.Bid > 0)].rename(columns={'expirationDate': 'expDt', 'ImpliedVolatility': 'ImpVola'})
-        _df['expDt'] = pd.to_datetime(_df.expDt).dt.strftime('%F')
-        _df['mid'] = (_df.Bid + _df.Ask)/2
-        selected_cols = ['symbol', 'expDt', 'strike', 'dte', 'mid', 'pctSpread', 'lastPrice', 'Delta', 'Gamma', 'Theta', 'Vega', 'Volume', 'BidSize', 'AskSize', 'ImpVola', 'OpenInterest', 'load_dt']
-        neglected_cols = [c for c in _df.columns if c not in selected_cols]
-        print('sort_leaps_df neglected columns:', neglected_cols)
-        _df = _df.loc[:, selected_cols]
-        _df = _df.sort_values(by=['expDt', 'strike'])
-        return _df
 
     def read_leaps_history(self, symbol, min_dte=180):
         cache_csv_file = self.cache_leaps_history(symbol)

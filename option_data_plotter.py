@@ -48,6 +48,7 @@ def plot_option_details_by_dte(df_cp, symbol, metric, delta_lb=0.5, delta_ub=0.9
     spot = _df_cp.lastPrice.min()
     plt.rcParams['figure.figsize'] = (24, 5*nr)
     fig, ax = plt.subplots(nr, nc)
+    print('orange: put, blue: call')
     for i, _dte in enumerate(dte_list[:nr*nc]):
         df_c = _df_cp[(_df_cp.type == 'C') & (_df_cp.dte == _dte) & (_df_cp.Delta >= delta_lb) & (_df_cp.Delta <= delta_ub)]
         strike_min = df_c.strike.min()
@@ -67,6 +68,7 @@ def plot_option_details_by_strike(df_cp, symbol, metric, moneyness_range):
     nc = int(np.ceil(len(strike_list)/nr))
     plt.rcParams['figure.figsize'] = (24, 5*nr)
     fig, ax = plt.subplots(nr, nc)
+    print('orange: put, blue: call')
     for i, strike in enumerate(strike_list):
         df_c = _df_cp[(_df_cp.type == 'C') & (_df_cp.strike == strike)]
         df_p = _df_cp[(_df_cp.type == 'P') & (_df_cp.strike == strike)]
