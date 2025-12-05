@@ -277,13 +277,6 @@ class OptionFinder(object):
         dfcp['leverage'] = dfcp.lastPrice/dfcp.mid*dfcp.Delta
         return dfcp
 
-    def overall_put_call_ratios(self, df, dte_range=None):
-        if dte_range is not None:
-            df = df[(df.dte >= dte_range[0]) & (df.dte <= dte_range[1])]
-        values = ['Volume', 'OpenInterest']
-        p = df.pivot_table(index='symbol', columns='type', values=values, aggfunc='sum', observed=True, fill_value=0)
-        return pd.DataFrame(dict([(_v, p.loc[:, (_v, 'P')]/p.loc[:, (_v, 'C')]) for _v in values]))
-
     def process_data(self, symlist):
         log = self.logger
         df_q, df_s, df_v = self.get_quote_df(symlist)

@@ -9,8 +9,7 @@ import pandas as pd
 import random
 from glob import glob
 from datetime import datetime, timedelta
-from pandas.tseries.offsets import BDay
-from pandas.tseries.offsets import BQuarterEnd
+from pandas.tseries.offsets import BDay, BQuarterEnd, BMonthEnd
 import logging
 from logging.handlers import RotatingFileHandler
 
@@ -25,7 +24,7 @@ def get_rotating_logger(log_name, log_file):
 def is_good_friday(date_obj):
     if date_obj.strftime('%F') in '2026-04-03 2027-03-26 2028-04-14 2029-03-30 2030-04-19 2031-04-11 2032-03-26 2033-04-15 2034-04-07':
         return True
-    elif date_obj.strftime('%F') > '2034-04-07':
+    elif date_obj.strftime('%F') > '2035-02-28':
         raise "is_good_friday() function is out of date."
     else:
         return False
@@ -64,8 +63,10 @@ def is_third_friday(date_obj):
 
 def is_last_business_day_of_quarter(date_obj):
     # Check if the day is the last business day of the quarter
-    quarter_end = BQuarterEnd()
-    return date_obj == quarter_end.rollforward(date_obj)
+    return date_obj == BQuarterEnd().rollforward(date_obj)
+
+def is_last_day_of_month(date_obj):
+    return date_obj == BMonthEnd().rollforward(date_obj)
 
 def expiration_date_type(date_obj):
     if is_last_business_day_of_quarter(date_obj):
@@ -77,140 +78,58 @@ def expiration_date_type(date_obj):
 def exp_date(d):
     return d.strftime('%m/%d/%Y')
 
-def settlement_date_type(d, settlement_type):
-    return d.strftime('%b %d %Y') + settlement_type
+def settlement_date_type(d, exp_type):
+    return d.strftime('%b %d %Y') + exp_type
 
-def get_regular_option_days(days=100):
-    today = datetime.today()
-    end_day = today + timedelta(days=days)
-    option_days = pd.date_range(start=today, end=end_day, freq=BDay())
-    option_day0 = option_days[0]
-    res_days = []
-    res_days2 = []
-    for d in option_days:
-        if is_holiday(d):
+def get_option_expiration_dates(days=548, start_date=None):
+    today = pd.Timestamp.now().normalize()
+    if start_date is None:
+        start_date = today
+    end_date = start_date + timedelta(days=days)
+    option_dates = pd.date_range(start=start_date, end=end_date, freq=BDay())
+    juneteens = [pd.to_datetime(f'{y}-06-19') for y in range(option_dates[0].year, option_dates[-1].year+1)]
+    juneteens_on_friday = [_d - timedelta(days=_d.weekday()-3) for _d in juneteens if _d.weekday() in [4 ,5]]
+    date0 = option_dates[0]
+    res_dates = []
+    res_dates2 = []
+    for d_i in option_dates:
+        if is_holiday(d_i):
             continue
-        if d.year - option_day0.year == 2:
-            if d.month == 6 and d.day == 18 and d.weekday() == 3:
-                #print(d.strftime('%F'), '18 before Juneteen')
-                res_days.append(exp_date(d))
-                res_days2.append(settlement_date_type(d, '|W'))
-            elif d.month in [1, 12] and is_third_friday(d):
-                #print(d.strftime('%F'), d.year)
-                res_days.append(exp_date(d))
-                res_days2.append(settlement_date_type(d, '|W'))
+        if d_i in juneteens_on_friday:
+            res_dates.append(exp_date(d_i))
+            res_dates2.append(settlement_date_type(d_i, ''))
             continue
-        if d.month == 6 and d.day < 21:
-            # third Friday special case
-            if d.day == 18 and d.weekday() == 3:
-                #print(d.strftime('%F'), 'Q 18 before Junteen')
-                res_days.append(exp_date(d))
-                res_days2.append(settlement_date_type(d, '|Q'))
-            elif is_third_friday(d):
-                #print(d.strftime('%F'), '')
-                res_days.append(exp_date(d))
-                res_days2.append(settlement_date_type(d, ''))
-            continue
-        elif d.month in [3, 9, 12] and is_third_friday(d):
-            #print(d.strftime('%F'), '(Q)')
-            res_days.append(exp_date(d))
-            res_days2.append(settlement_date_type(d, ''))
-            continue
-        if d.year == option_day0.year or (d.year == option_day0.year + 1 and d.month <= option_day0.month):
-            if (d+timedelta(days=1)).month != d.month or (d.weekday() == 4 and (d+timedelta(days=3)).month != d.month):
-                if d.month in [3, 6, 9, 12]:
-                    #print(d.strftime('%F'), 'Q')
-                    res_days.append(exp_date(d))
-                    res_days2.append(settlement_date_type(d, '|Q'))
-                else:
-                    #print(d.strftime('%F'), 'W (ME)', d.year)
-                    res_days.append(exp_date(d))
-                    res_days2.append(settlement_date_type(d, '|W'))
+        exp_type = None
+        days_from_today = (d_i - today).days
+        if days_from_today > 364:
+            # only third Friday, all regular
+            if not (d_i.month in [1, 3, 6, 9, 12] and is_third_friday(d_i)):
                 continue
-        if is_third_friday(d):
-            #print(d.strftime('%F'))
-            res_days.append(exp_date(d))
-            res_days2.append(settlement_date_type(d, ''))
-            continue
-        nd = (d-option_day0).days
-        if nd <= 42 and d.weekday() == 4:
-            #print(d.strftime('%F'), 'W')
-            res_days.append(exp_date(d))
-            res_days2.append(settlement_date_type(d, '|W'))
-            continue
-        if nd <= 14:
-            #print(d.strftime('%F'), 'W')
-            res_days.append(exp_date(d))
-            res_days2.append(settlement_date_type(d, '|W'))
-            continue
-    return res_days, res_days2
-
-def get_leaps_option_days():
-    today = datetime.today()
-    start_day = today + timedelta(days=90)
-    end_day = start_day + timedelta(days=365 + 182)
-    option_days = pd.date_range(start=start_day, end=end_day, freq=BDay())
-    option_day0 = option_days[0]
-    res_days = []
-    res_days2 = []
-    for d in option_days:
-        if is_holiday(d):
-            continue
-        if d.strftime('%F') == '2025-04-17':
-            res_days.append(exp_date(d))
-            res_days2.append(settlement_date_type(d, ""))
-            continue
-        if d.year - option_day0.year == 2:
-            if d.month == 6 and d.day == 18 and d.weekday() == 3:
-                #print(d.strftime('%F'), '18 before Juneteen')
-                res_days.append(exp_date(d))
-                res_days2.append(settlement_date_type(d, ''))
-            elif d.month in [1, 12] and is_third_friday(d):
-                #print(d.strftime('%F'), d.year)
-                res_days.append(exp_date(d))
-                res_days2.append(settlement_date_type(d, ''))
-            continue
-        if d.month == 6 and d.day < 21:
-            # third Friday special case
-            if d.day == 18 and d.weekday() == 3:
-                #print(d.strftime('%F'), 'Q 18 before Junteen')
-                res_days.append(exp_date(d))
-                res_days2.append(settlement_date_type(d, '|Q'))
-            elif is_third_friday(d):
-                #print(d.strftime('%F'), '')
-                res_days.append(exp_date(d))
-                res_days2.append(settlement_date_type(d, ''))
-            continue
-        if (d+timedelta(days=1)).month != d.month or (d.weekday() == 4 and (d+timedelta(days=3)).month != d.month):
-            if d.month in [3, 6, 9, 12] and (d - today).days <= 366:
-                #print(d.strftime('%F'), 'Q')
-                res_days.append(exp_date(d))
-                res_days2.append(settlement_date_type(d, '|Q'))
-            elif (d - today).days <= 240:
-                #print(d.strftime('%F'), 'W')
-                res_days.append(exp_date(d))
-                res_days2.append(settlement_date_type(d, '|W'))
+            exp_type = ''
+        elif days_from_today > 182:
+            # third Fridy every month + last trading day every quarter
+            if not (is_third_friday(d_i) or (d_i.month in [3, 6, 9, 12] and is_last_business_day_of_quarter(d_i))):
                 continue
-        if d.month in [1, 3, 6, 9, 12] and is_third_friday(d):
-            #print(d.strftime('%F'))
-            res_days.append(exp_date(d))
-            res_days2.append(settlement_date_type(d, ''))
-            continue
-        if ((d - today).days <= 240) and d.weekday() == 4:
-            res_days.append(exp_date(d))
-            res_days2.append(settlement_date_type(d, '|W'))
-            #print(d.strftime('## %F'))
-    return res_days, res_days2
+        elif days_from_today > 56:
+            # twice every month: third Friday + last trading day of month (also quarter)
+            if not (is_third_friday(d_i) or is_last_day_of_month(d_i)):
+                continue
+        elif days_from_today > 14:
+            # every week + last trading day of the month (also quarter)
+            if not(d_i.weekday() == 4 or is_last_day_of_month(d_i)):
+                continue
+        res_dates.append(exp_date(d_i))
+        res_dates2.append(settlement_date_type(d_i, exp_type or expiration_date_type(d_i)))
+    return res_dates, res_dates2
 
 class OptionChainDownloader(object):
     api_url = 'https://digital.fidelity.com/ftgw/digital/options-research/api'
-    def __init__(self, chain_dir, quotes_dir, leaps_dir, cookie_file, logger, strikes):
+    def __init__(self, chain_dir, quotes_dir, cookie_file, logger, strikes):
         '''days: 
         '''
         self.chain_dir = chain_dir
         self.quotes_dir = quotes_dir
-        self.leaps_dir = leaps_dir
-        for d in (chain_dir, quotes_dir, leaps_dir):
+        for d in (chain_dir, quotes_dir):
             if not os.path.exists(d):
                 os.mkdir(d)
         self.session = requests.Session()
@@ -310,12 +229,8 @@ class OptionChainDownloader(object):
 
     def get_slo_chain_data(self, symbol, strikes=None):
         strikes = self.strikes if strikes is None else strikes
-        expiration_dates, settlement_types = get_regular_option_days()
+        expiration_dates, settlement_types = get_option_expiration_dates()
         return self.get_option_data(symbol, strikes, expiration_dates, settlement_types, self.chain_dir)
-
-    def get_leaps_data(self, symbol, strikes='ALL'):
-        expiration_dates, settlement_types = get_leaps_option_days()
-        return self.get_option_data(symbol, strikes, expiration_dates, settlement_types, self.leaps_dir)
 
     def get_quotes(self, symbol):
         url = self.api_url + '/quotes?symbols=' + symbol
@@ -331,12 +246,13 @@ class OptionChainDownloader(object):
 
     def parallel_get_data(self, symbol_list, rps=1):
         wait_time = 1.0/rps if rps > 0 else 1.0
+        dl_count = 0
         for symbol in symbol_list:
             if os.path.exists(self.abort_signal_file):
                 with open(self.abort_signal_file) as fo:
                     self.logger.warning(f'parallel_get_data detected abort file {self.abort_signal_file}: {fo.read()}')
                 break
-            for target in [self.get_slo_chain_data, self.get_quotes, self.get_leaps_data]:
+            for target in [self.get_quotes, self.get_slo_chain_data]:
                 t0 = time.perf_counter()
                 proc = Process(target=target, args=(symbol,))
                 self.sym_proc[symbol] = proc
@@ -344,7 +260,8 @@ class OptionChainDownloader(object):
                 et = time.perf_counter() - t0
                 if et < wait_time:
                     time.sleep(wait_time - et)
-        return 3*len(symbol_list)
+                dl_count += 1
+        return dl_count
 
     def count_zombies(self):
         return len([x for x in getoutput(f'/usr/bin/ps --ppid {os.getpid()} -oargs').splitlines() if x.find('<defunct>') > 0])
@@ -372,7 +289,7 @@ class OptionChainDownloader(object):
         if batch_size == 0:
             cookie_expired = False
             for symbol in symbol_list:
-                for target in [self.get_quotes, self.get_slo_chain_data, self.get_leaps_data]:
+                for target in [self.get_quotes, self.get_slo_chain_data]:
                     if target(symbol):
                         dl_count += 1
                         time.sleep(0.005+random.random()*0.005)
@@ -391,9 +308,7 @@ class OptionChainDownloader(object):
     def save_option_data(self, symlist):
         from option_finder import OptionFinder
         finder1 = OptionFinder(self.logger, chain_dir=self.chain_dir)
-        finder2 = OptionFinder(self.logger, chain_dir=self.leaps_dir)
         finder1.get_quote_df(symlist)
-        finder2.last_price = finder1.last_price
         df1 = finder1.build_option_df(symlist)
         ts = time.strftime('%F-%H%M')
         if df1 is None:
@@ -402,18 +317,10 @@ class OptionChainDownloader(object):
             output_file1 = os.path.join(finder1.report_dir, f"{len(symlist)}_options~{ts}.csv")
             df1.to_csv(output_file1, index=None)
             self.logger.info(f'save_option_data wrote {output_file1}')
-        df2 = finder2.build_option_df(symlist)
-        if df2 is None:
-            self.logger.warning(f'save_option_data failed to build leaps dataframe for {len(symlist)} symbols.')
-        else:
-            output_file2 = os.path.join(finder2.report_dir, f"{len(symlist)}_leaps~{ts}.csv")
-            df2.to_csv(output_file2, index=None)
-            self.logger.info(f'save_option_data wrote {output_file2}')
 
 def main():
     chain_dir = 'chain'
     quotes_dir = 'quotes'
-    leaps_dir = 'leaps'
     cookie_file = 'cookie.txt'
     log_file = os.path.join(os.path.dirname(sys.argv[0]), 'logs', os.path.basename(sys.argv[0]).replace('.py', '') + '.log')
 
@@ -421,7 +328,7 @@ def main():
     sys.stdout.flush()
     logger = get_rotating_logger("", log_file)
     symbol_file = sys.argv[1]
-    ocd = OptionChainDownloader(chain_dir, quotes_dir, leaps_dir, cookie_file, logger, strikes='ALL')
+    ocd = OptionChainDownloader(chain_dir, quotes_dir, cookie_file, logger, strikes='ALL')
     batch_size = 0 # Download sequentially
     while True:
         if not os.path.exists(symbol_file):
@@ -450,10 +357,10 @@ def main():
         logger.info(f'BEGIN downloading {len(symlist)} symbols')
         dl_count = ocd.download_option_chain(symlist, batch_size=batch_size, rps=1)
         if dl_count > 0:
-            leaps_mtimes = [os.path.getmtime(f) for f in glob(os.path.join(leaps_dir, '*')) if '.' not in f]
-            if len(leaps_mtimes) > 0 and max(leaps_mtimes) - min(leaps_mtimes) < 300:
+            chain_mtimes = [os.path.getmtime(f) for f in glob(os.path.join(chain_dir, '*')) if '.' not in f]
+            if len(chain_mtimes) > 0 and max(chain_mtimes) - min(chain_mtimes) < 300:
                 ocd.save_option_data(symlist)
-                awhile = 595 - max(leaps_mtimes) + min(leaps_mtimes)
+                awhile = 595 - max(chain_mtimes) + min(chain_mtimes)
                 logger.info(f'FINISH downloading. Sleep {awhile + 5} seconds')
                 time.sleep(5)
                 if batch_size > 0:
