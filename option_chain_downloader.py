@@ -83,6 +83,8 @@ def settlement_date_type(d, exp_type):
 
 def get_option_expiration_dates(days=548, start_date=None):
     today = pd.Timestamp.now().normalize()
+    if today.weekday() > 4:
+        today += timedelta(days=7-today.weekday())
     if start_date is None:
         start_date = today
     end_date = start_date + timedelta(days=days)
