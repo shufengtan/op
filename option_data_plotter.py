@@ -174,7 +174,7 @@ def plot_leverage_overpaid(df, delta_lb=0.5, overpaid_ub=0.1, price_lb=5, spread
     nc = int(np.ceil(len(_symlist)/nr))
     #plt.rcParams['figure.figsize'] = (nc*5, nr*5)
     #fig, ax = plt.subplots(nr, nc)
-    titles=[f'{symbol} {"~".join((lambda x: [x[0], x[-1]])(sorted(_df.loc[symbol].dte.astype(str).unique())))}' for symbol in _symlist]
+    titles=[f'{symbol} {"~".join((lambda x: [str(x[0]), str(x[-1])])(sorted(_df.loc[symbol].dte.unique())))} DTE' for symbol in _symlist]
     fig = make_subplots(rows=nr, cols=nc, subplot_titles=titles, horizontal_spacing=0.01, vertical_spacing=0.05, shared_xaxes=True, shared_yaxes=True)
     fig.update_layout(height=nr*300)
     for i, symbol in enumerate(_symlist):
