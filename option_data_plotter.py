@@ -1,9 +1,9 @@
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 import plotly.express as px
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
+import sys
 
 def check_data_age(_df):
     now = pd.Timestamp.now()
@@ -11,49 +11,102 @@ def check_data_age(_df):
     age = (now - _g.max()).map(lambda x: x.seconds).rename(columns={'quote_dt': 'quote_age', 'load_dt': 'load_age'})
     return age
 
-def plot_option_volume_openinterest(df):
-    metric_list = ['Volume', 'OpenInterest']
-    fig = make_subplots(rows=1, cols=len(metric_list), subplot_titles=metric_list)
-    grouper = ['symbol', 'type']
+def plot_metric_subtotals_in_one_row(df, grouper, metric_list, shared_y=True, log_y_threshold=500, horizontal_spacing=0.02):
+    fig = make_subplots(rows=1, cols=len(metric_list), subplot_titles=metric_list, shared_yaxes=shared_y, horizontal_spacing=horizontal_spacing)
+    fig.update_layout(height=400)
     _df = df.loc[:, grouper + metric_list].groupby(grouper).sum().reset_index()
-    for i, metric in enumerate(metric_list):
-        chart = px.bar(_df, x='symbol', y=metric, color='type')
+    if shared_y and _df.loc[:, metric_list].max().max() >= log_y_threshold*_df.loc[:, metric_list].quantile(0.01).min():
+        fig.update_yaxes(type="log")
+        sys.stderr.write('y axes in log\n')
+    for j, metric in enumerate(metric_list):
+        if len(grouper) > 1:
+            chart = px.bar(_df, x=grouper[0], y=metric, color=grouper[-1])
+        else:
+            chart = px.bar(_df, x=grouper[0], y=metric)
         for trace in chart.data:
-            fig.add_trace(trace, row=1, col=i+1)
+            fig.add_trace(trace, row=1, col=j+1)
     fig.show()
     return _df
 
-def overall_put_call_ratios(df, dte_range=None):
-    if dte_range is not None:
-        df = df[(df.dte >= dte_range[0]) & (df.dte <= dte_range[1])]
-    values = ['Volume', 'OpenInterest']
-    p = df.pivot_table(index='symbol', columns='type', values=values, aggfunc='sum', observed=True, fill_value=0)
-    return pd.DataFrame(dict([(_v, p.loc[:, (_v, 'P')]/p.loc[:, (_v, 'C')]) for _v in values]))
-
-def plot_put_call_ratios(df, dte_range):
-    fig = make_subplots(rows=1, cols=2, subplot_titles=['All DTEs', f'DTE {dte_range}'])
-    df_all = overall_put_call_ratios(df)
-    df1 = overall_put_call_ratios(df, dte_range)
-    chart1 = px.bar(df_all.sort_values(by='Volume'))
-    chart2 = px.bar(df1.sort_values(by='Volume'))
-    for trace in chart1.data:
-        fig.add_trace(trace, row=1, col=1)
-    for trace in chart2.data:
-        fig.add_trace(trace, row=1, col=2)
+def plot_metrics_in_one_row(df, groupers, metric_list, shared_y=True, log_y_threshold=500, horizontal_spacing=0.02):
+    fig = make_subplots(rows=1, cols=len(metric_list), subplot_titles=metric_list, shared_yaxes=shared_y, horizontal_spacing=horizontal_spacing)
+    fig.update_layout(height=400)
+    if shared_y and df.loc[:, metric_list].max().max() >= log_y_threshold*df.loc[:, metric_list].quantile(0.01).min():
+        fig.update_yaxes(type="log")
+        sys.stderr.write('y axes in log\n')
+    for j, metric in enumerate(metric_list):
+        if len(groupers) > 1:
+            chart = px.bar(df, x=groupers[0], y=metric, color=groupers[-1])
+        else:
+            chart = px.bar(df, x=groupers[0], y=metric)
+        for trace in chart.data:
+            fig.add_trace(trace, row=1, col=j+1)
     fig.show()
-    return df_all.join(df1, lsuffix='_all')
+
+def calc_overall_put_call_ratios(df):
+    metrics = ['OpenInterest', 'Volume']
+    p = df.pivot_table(index='symbol', columns='type', values=metrics, aggfunc='sum', observed=False, fill_value=0)
+    return pd.DataFrame(dict([(_v + '_P_C_ratio', p.loc[:, (_v, 'P')]/p.loc[:, (_v, 'C')]) for _v in metrics])).reset_index()
+
+def calc_cluster_put_call_ratios(dfcp):
+    groupers = ['symbol', 'cluster', 'dte_cluster', 'type']
+    metrics = ['OpenInterest', 'Volume']
+    _df = dfcp.loc[:, groupers + metrics].groupby(groupers, observed=False).sum().reset_index()
+    _df = _df.pivot(columns='type', index=groupers[:-1])
+    _df = pd.DataFrame({'OpenInterest_P_C_ratio': _df.OpenInterest.P/_df.OpenInterest.C, 'Volume_P_C_ratio': _df.Volume.P/_df.Volume.C})
+    return _df.reset_index()
+    
+def plot_metrics_by_moneyness_and_dte_clusters(df, height=240, vertical_spacing=0.03, shared_yaxes=True):
+    symlist = df.symbol.unique()
+    metrics = [c for c in df.columns if c not in ['symbol', 'cluster', 'dte_cluster', 'type']]
+    titles = [f'{symbol} {metric}' for symbol in symlist for metric in metrics]
+    nr = len(symlist)
+    nc = len(metrics)
+    fig = make_subplots(rows=nr, cols=nc, subplot_titles=titles, horizontal_spacing=0.01, vertical_spacing=vertical_spacing, shared_yaxes=shared_yaxes)
+    fig.update_layout(showlegend=False, height=nr*height)
+    for i, symbol in enumerate(symlist):
+        for j, metric in enumerate(metrics):
+            #print(symbol, i, metric, j)
+            chart = px.bar(df[df.symbol == symbol], x='dte_cluster', y=metric, barmode='group', color='cluster')
+            for trace in chart.data:
+                fig.add_trace(trace, row=i+1, col=j+1)
+    fig.show()
 
 def add_moneyness_columns(df, atm_offset=0.01, otm_offset=0.1):
     df['moneyness'] = df['strike'] / df['lastPrice']
     bins = [0, 1-otm_offset, 1 - atm_offset, 1 + atm_offset, 1 + otm_offset, np.inf]
-    labels = ['deep_otm_put', 'otm_put', 'atm', 'otm_call', 'deep_otm_call']
+    labels = ['deep_otm_short', 'otm_short', 'atm', 'otm_long', 'deep_otm_long']
     df['cluster'] = pd.cut(df['moneyness'], bins=bins, labels=labels)
     return df
+
+def bucketize_dte(df, bins=[0, 7, 56, 91, 182, 364, np.inf]):
+    labels = ['1wk', '8wk', '13wk', '6mo', '1yr', '>1yr']
+    df['dte_cluster'] = pd.cut(df['dte'], bins=bins, labels=labels, right=False)
+    return df
+
+def aggregate_metrics_by_moneyness_and_dte_clusters(df, metrics, method='mean', oi_lb=None, bid_lb=0):
+    groupers = ['symbol', 'cluster', 'dte_cluster']
+    if 'type' in df.columns:
+        groupers.append('type')
+    _filter  = df.Bid >= bid_lb
+    if oi_lb:
+        _filter = _filter & (df.OpenInterest >= oi_lb)
+    if type(metrics) is str:
+        metrics = [metrics]
+    g = df.loc[:, groupers + metrics][_filter].groupby(groupers, observed=False)
+    if method == 'mean':
+        return g.mean().reset_index()
+    elif method == 'sum':
+        return g.sum().reset_index()
+    elif method == 'median':
+        return g.quantile(0.5).reset_index()
+    else:
+        raise Exception('Unknown aggregation method.')
 
 def put_call_ratios_by_moneyness(df, metric='Volume', by_dte=True):
     # Assume df already has moneyness cluster, option type
     idx_cols = ['symbol', 'dte', 'cluster'] if by_dte else ['symbol', 'cluster']
-    pivot = df.pivot_table(index=idx_cols, columns='type', values=metric, aggfunc='sum', observed=True, fill_value=0)
+    pivot = df.pivot_table(index=idx_cols, columns='type', values=metric, aggfunc='sum', observed=False, fill_value=0)
     pivot = pivot[pivot.C + pivot.P >= 10]
     return pd.DataFrame({'put_call_ratio': pivot['P'] / pivot['C']}).unstack(level=2 if by_dte else 1).put_call_ratio
 
@@ -122,7 +175,7 @@ def plot_leverage_overpaid(df, delta_lb=0.5, overpaid_ub=0.1, price_lb=5, spread
     #plt.rcParams['figure.figsize'] = (nc*5, nr*5)
     #fig, ax = plt.subplots(nr, nc)
     titles=[f'{symbol} {"~".join((lambda x: [x[0], x[-1]])(sorted(_df.loc[symbol].dte.astype(str).unique())))}' for symbol in _symlist]
-    fig = make_subplots(rows=nr, cols=nc, subplot_titles=titles, horizontal_spacing=0.05, vertical_spacing=0.05)
+    fig = make_subplots(rows=nr, cols=nc, subplot_titles=titles, horizontal_spacing=0.01, vertical_spacing=0.05, shared_xaxes=True, shared_yaxes=True)
     fig.update_layout(height=nr*300)
     for i, symbol in enumerate(_symlist):
         _dte = sorted(_df.loc[symbol].dte.unique())
