@@ -271,7 +271,7 @@ class OptionFinder(object):
         dfp['mid'] = (dfp.Bid + dfp.Ask)/2
         dfp['overpaid'] = (dfp.strike - dfp.mid)/dfp.lastPrice - 1
 
-        dfcp = pd.concat([dfc, dfp])#.drop(columns=['Bid', 'Ask'])
+        dfcp = pd.concat([dfc, dfp], ignore_index=True)#.drop(columns=['Bid', 'Ask'])
         dfcp = dfcp.rename(columns={'expirationDate': 'expDt', 'ImpliedVolatility': 'ImpVola'})
         dfcp['expDt'] = pd.to_datetime(dfcp.expDt).dt.strftime('%F')
         dfcp['leverage'] = dfcp.lastPrice/dfcp.mid*dfcp.Delta

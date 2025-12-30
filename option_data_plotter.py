@@ -11,6 +11,14 @@ def check_data_age(_df):
     age = (now - _g.max()).map(lambda x: x.seconds).rename(columns={'quote_dt': 'quote_age', 'load_dt': 'load_age'})
     return age
 
+def get_closest_value(df, col, target_value):
+    groupers = [c for c in df.columns if c != col]
+    df = df.drop_duplicates(subset=groupers + [col])
+    tmp_diff_col = '__diff'
+    df[tmp_diff_col] = (df[col] - target_value).abs()
+    idx = df.groupby(groupers)[tmp_diff_col].idxmin() if len(groupers) > 0 else df.loc[:, [tmp_diff_col]].idxmin()
+    return df.loc[idx].drop(columns=[tmp_diff_col])
+
 def plot_metric_subtotals_in_one_row(df, grouper, metric_list, shared_y=True, log_y_threshold=500, horizontal_spacing=0.02):
     fig = make_subplots(rows=1, cols=len(metric_list), subplot_titles=metric_list, shared_yaxes=shared_y, horizontal_spacing=horizontal_spacing)
     fig.update_layout(height=400)
