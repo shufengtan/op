@@ -19,6 +19,23 @@ def get_closest_value(df, col, target_value):
     idx = df.groupby(groupers)[tmp_diff_col].idxmin() if len(groupers) > 0 else df.loc[:, [tmp_diff_col]].idxmin()
     return df.loc[idx].drop(columns=[tmp_diff_col])
 
+def select_pds_deltas(dfcp, dte_lb, dte_ub):
+    dfpds = dfcp[(dfcp.type=='P') & (dfcp.dte >= dte_lb) & (dfcp.dte <= dte_ub)].copy()
+    dfdelta_25 = get_closest_value(dfpds[dfpds.Delta >= -0.25].loc[:, ['symbol', 'dte', 'Delta']], 'Delta', -0.25).set_index(['symbol', 'dte'])
+    dfstrike_atm = get_closest_value(dfpds.loc[:, ['symbol', 'dte', 'strike']], 'strike', dfpds.lastPrice).set_index(['symbol', 'dte'])
+    dfdelta_50 = get_closest_value(dfpds[dfpds.Delta >= -0.6].loc[:, ['symbol', 'dte', 'Delta']], 'Delta', -0.5).set_index(['symbol', 'dte'])
+    dfdelta_5 = get_closest_value(dfpds[dfpds.Delta >= -0.06].loc[:, ['symbol', 'dte', 'Delta']], 'Delta', -0.05).set_index(['symbol', 'dte'])
+    return dfstrike_atm.join(dfdelta_25).join(dfdelta_50, rsuffix='_50').join(dfdelta_5, rsuffix='_5').rename(columns={'strike': 'atm_strike', 'Delta': 'Delta_25'})
+
+def put_debit_spread(dfpds, symbol, dte, dfcp, cols=['strike', 'Delta', 'mid', 'OpenInterest', 'ImpVola']):
+    delta_dict = dfpds.loc[(symbol, dte)].to_dict()
+    atm_strike = delta_dict.pop('atm_strike')
+    deltas = list(delta_dict.values())
+    _f = (dfcp.strike==atm_strike) & (dfcp.type=='P')
+    for _d in deltas:
+        _f = _f | (dfcp.Delta==_d)
+    return dfcp[(dfcp.symbol==symbol) & (dfcp.dte==dte) & (_f)].loc[:, cols]
+
 def plot_metric_subtotals_in_one_row(df, grouper, metric_list, shared_y=True, log_y_threshold=500, horizontal_spacing=0.02):
     fig = make_subplots(rows=1, cols=len(metric_list), subplot_titles=metric_list, shared_yaxes=shared_y, horizontal_spacing=horizontal_spacing)
     fig.update_layout(height=400)
