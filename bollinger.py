@@ -7,20 +7,21 @@ import yfinance as yf
 import re
 import sys
 import os
-sys.path.append('/home/s/lab')
+LAB_DIR=os.path.expanduser('~/lab')
+sys.path.append(LAB_DIR)
 
 def gather_tickers():
-    symlist = pd.read_csv(os.path.expanduser('~/lab/components/sp500.csv')).symbol.to_list()
+    symlist = pd.read_csv(os.path.join(LAB_DIR, 'components/sp500.csv')).symbol.to_list()
     #### yf uses '-' instead of '.'
     symlist = [_.replace('.', '-') for _ in symlist]
     print(f'gather_tickers: {len(symlist)} symbols from SP500')
-    nasdaq100 = pd.read_csv(os.path.expanduser('~/lab/components/nasdaq100.csv')).Ticker.to_list()
+    nasdaq100 = pd.read_csv(os.path.join(LAB_DIR, 'components/nasdaq100.csv')).Ticker.to_list()
     for ticker in nasdaq100:
         if ticker not in symlist:
             symlist.append(ticker)
     print(f'gather_tickers: {len(symlist)} symbols after adding NASDAQ 100')
 
-    with open(os.path.expanduser('~/lab/symbols.txt')) as fo:
+    with open(os.path.join(LAB_DIR, 'symbols.txt')) as fo:
         for x in fo:
             s = x.rstrip()
             if s not in symlist:
@@ -33,12 +34,19 @@ def gather_tickers():
     print(f'gather_tickers: {len(symlist)} symbols finally')
     return symlist
 
-def select_date_range(days_offset=265):
-    end_date = pd.Timestamp.today()
+def select_date_range(end_date=None, days_offset=265):
+    today = pd.Timestamp.today()
+    if end_date is None:
+        end_date = today
+        if end_date.hour < 16:
+            print('end_date is today, before market close:', end_date, end=' ')
+            end_date -= pd.to_timedelta('1d')
+            print('adjusted to', end_date)
+    else:
+        end_date = pd.to_datetime(end_date)
     if end_date.weekday() >= 5:
+        print('end_date is on weekend:', end_date.weekday())
         end_date = end_date - pd.tseries.offsets.BDay(1)
-    if end_date.hour < 16:
-        end_date -= pd.to_timedelta('1d')
     print('End date:', end_date.strftime('%F %A'))
     start_date = end_date - pd.tseries.offsets.BDay(days_offset)
     print('Start date:', start_date.strftime('%F %A'))
@@ -134,16 +142,18 @@ def assemble_bollinger_band_df(df_yf):
 
 if __name__ == '__main__':
     symlist = gather_tickers()
-    start_date, end_date = select_date_range(days_offset=265)
+    end_date = sys.argv[1] if len(sys.argv) >= 2 else None
+    print('end_date:', end_date)
+    start_date, end_date = select_date_range(end_date=end_date, days_offset=265)
     df_yf = yf.download(symlist, start=start_date, end=end_date, progress=False, auto_adjust=True)
 
     dfhv = compute_hv(df_yf)
-    hv_csv_file = end_date.strftime('/home/s/lab/output/hv-%F.csv')
+    hv_csv_file = end_date.strftime(f'{LAB_DIR}/output/hv-%F.csv')
     print('HV output file:', hv_csv_file)
     dfhv.map(lambda x: f'{x:.4f}').to_csv(hv_csv_file)
 
     df = assemble_bollinger_band_df(df_yf)
-    csv_file = end_date.strftime('/home/s/lab/output/bollinger_bands-%F.csv')
+    csv_file = end_date.strftime(f'{LAB_DIR}/output/bollinger_bands-%F.csv')
     print('Bollinger bands output file:', csv_file)
     for col in df.columns:
         if col == 'Volume_Avg':
