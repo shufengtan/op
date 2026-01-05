@@ -131,9 +131,9 @@ class OptionChainDownloader(object):
         '''
         self.chain_dir = chain_dir
         self.quotes_dir = quotes_dir
-        for d in (chain_dir, quotes_dir):
-            if not os.path.exists(d):
-                os.mkdir(d)
+        for _d in (chain_dir, quotes_dir):
+            if _d is not None and not os.path.exists(_d):
+                os.mkdir(_d)
         self.session = requests.Session()
         self.session.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0',
@@ -247,6 +247,13 @@ class OptionChainDownloader(object):
             return resp_text
 
     def parallel_get_data(self, symbol_list, rps=1):
+        target_list = []
+        if self.chain_dir is not None:
+            target_list.append(self.get_slo_chain_data)
+        if self.quotes_dir is not None:
+            target_list.append(self.get_quotes)
+        if len(target_list) == 0:
+            return 0
         wait_time = 1.0/rps if rps > 0 else 1.0
         dl_count = 0
         for symbol in symbol_list:
@@ -254,7 +261,7 @@ class OptionChainDownloader(object):
                 with open(self.abort_signal_file) as fo:
                     self.logger.warning(f'parallel_get_data detected abort file {self.abort_signal_file}: {fo.read()}')
                 break
-            for target in [self.get_quotes, self.get_slo_chain_data]:
+            for target in target_list:
                 t0 = time.perf_counter()
                 proc = Process(target=target, args=(symbol,))
                 self.sym_proc[symbol] = proc
