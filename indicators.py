@@ -98,7 +98,7 @@ def calculate_bollinger_bands(prices, window=20, num_std=2):
     })
     return bollinger_df
 
-def assemble_bollinger_band_df(df_yf):
+def assemble_indicator_df(df_yf):
     dfma = compute_ma(df_yf)
 
     _df20 = df_yf.tail(20)
@@ -152,7 +152,7 @@ if __name__ == '__main__':
     print('HV output file:', hv_csv_file)
     dfhv.map(lambda x: f'{x:.4f}').to_csv(hv_csv_file)
 
-    df = assemble_bollinger_band_df(df_yf)
+    df = assemble_indicator_df(df_yf)
     csv_file = end_date.strftime(f'{LAB_DIR}/output/bollinger_bands-%F.csv')
     print('Bollinger bands output file:', csv_file)
     for col in df.columns:
