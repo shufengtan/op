@@ -214,17 +214,18 @@ class OptionChainDownloader(object):
         return
 
     def get_option_data(self, symbol, strikes, expiration_dates, settlement_types, save_dir):
+        _symbol = symbol.replace('-', '/')
         url = self.api_url + f'/slo-chain?&adjustedOptionsData=true'
-        url += '&symbol=' + symbol
+        url += '&symbol=' + _symbol
         url += f'&strikes={strikes}'
         url += '&expirationDates=' + ','.join(expiration_dates)
         url += '&settlementTypes=' + ','.join(settlement_types).replace(' ', '%20')
         resp_text = self.get_url(url)
         if resp_text is None or (resp_text != '' and resp_text.find('{"callsAndPuts":') < 0):
-            self.logger.warning(f'get_option_data failed to get callsAndPuts data: {resp_text[:200].replace('\n', ' ') if resp_text else resp_text}')
+            self.logger.warning(f'get_option_data {_symbol} failed to get callsAndPuts data: {resp_text[:200].replace('\n', ' ') if resp_text else resp_text}')
             return
         if resp_text is not None:
-            chain_file = os.path.join(save_dir, symbol)
+            chain_file = os.path.join(save_dir, symbol.replace('/', '-'))
             with open(chain_file, 'w') as wfo:
                 wfo.write(resp_text)
             return resp_text
@@ -235,13 +236,14 @@ class OptionChainDownloader(object):
         return self.get_option_data(symbol, strikes, expiration_dates, settlement_types, self.chain_dir)
 
     def get_quotes(self, symbol):
-        url = self.api_url + '/quotes?symbols=' + symbol
+        _symbol = symbol.replace('-', '/')
+        url = self.api_url + '/quotes?symbols=' + _symbol
         resp_text = self.get_url(url)
         if resp_text is None or resp_text == '' or resp_text[0] != '{':
-            self.logger.warning(f"get_quotes failed to get json data: {resp_text[:50] if resp_text else resp_text}")
+            self.logger.warning(f"get_quotes {_symbol} failed to get json data: {resp_text[:50] if resp_text else resp_text}")
             return
         if resp_text is not None:
-            quotes_file = os.path.join(self.quotes_dir, symbol)
+            quotes_file = os.path.join(self.quotes_dir, symbol.replace('/', '-'))
             with open(quotes_file, 'w') as wfo:
                 wfo.write(resp_text)
             return resp_text
