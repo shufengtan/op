@@ -11,6 +11,16 @@ def check_data_age(_df):
     age = (now - _g.max()).map(lambda x: x.seconds).rename(columns={'quote_dt': 'quote_age', 'load_dt': 'load_age'})
     return age
 
+def days_from_earning_reports(df_quotes):
+    '''df_quotes from OptionFinder.get_quote_df()
+    returns df with earningQtrReportDate and earningDays'''
+    _df = df_quotes.loc[:, ['symbol', 'earningQtrReportDate']]
+    today = pd.Timestamp.today().normalize()
+    _df['earningDays'] = (pd.to_datetime(_df.earningQtrReportDate) - today).dt.days
+    _df = _df[(_df.earningDays <= 60) & (_df.earningDays >= 0)].sort_values(by='earningDays')
+    _df['earningDays'] = _df.earningDays.astype(int)
+    return _df.set_index('symbol')
+
 def get_closest_value(df, col, target_value):
     groupers = [c for c in df.columns if c != col]
     df = df.drop_duplicates(subset=groupers + [col])
@@ -201,11 +211,12 @@ def plot_leverage_overpaid(df, delta_lb=0.5, overpaid_ub=0.1, price_lb=5, spread
     #fig, ax = plt.subplots(nr, nc)
     titles=[f'{symbol} {"~".join((lambda x: [str(x[0]), str(x[-1])])(sorted(_df.loc[symbol].dte.unique())))} DTE' for symbol in _symlist]
     fig = make_subplots(rows=nr, cols=nc, subplot_titles=titles, horizontal_spacing=0.01, vertical_spacing=0.05, shared_xaxes=True, shared_yaxes=True)
-    fig.update_layout(height=nr*300)
+    fig.update_layout(height=nr*300, showlegend=False)
+    __df = _df.reset_index()
     for i, symbol in enumerate(_symlist):
         _dte = sorted(_df.loc[symbol].dte.unique())
-        print(symbol, len(_dte), 'DTEs', _dte)
-        chart = px.scatter(_df.xs(symbol, level='symbol'), x='overpaid', y='leverage')
+        print(symbol, len(_dte), 'DTEs', [int(_) for _ in _dte])
+        chart = px.scatter(__df[__df.symbol==symbol], x='overpaid', y='leverage', color='expDt')
         for trace in chart.data:
             fig.add_trace(trace, row=i//nc+1, col=i%nc+1)
     fig.show()

@@ -69,6 +69,7 @@ def compute_hv(df_yf):
     return pd.DataFrame(dodf)
 
 def compute_ma(df_yf):
+    '''df_yf from yfinance.download() with 2-level columns'''
     d_o_ma = {}
     for days in [200, 50, 10]:
         df_close = df_yf.Close.tail(days)
@@ -147,13 +148,22 @@ if __name__ == '__main__':
     start_date, end_date = select_date_range(end_date=end_date, days_offset=265)
     df_yf = yf.download(symlist, start=start_date, end=end_date, progress=False, auto_adjust=True)
 
+    last_date = df_yf.index[-1].strftime('%F')
+
+    yf_close_csv_file = f'{LAB_DIR}/output/yf_close.csv'
+    df_yf.Close.to_csv(yf_close_csv_file)
+    print(yf_close_csv_file, df_yf.Close.shape, last_date)
+    yf_volume_csv_file = f'{LAB_DIR}/output/yf_volumes.csv'
+    df_yf.Volume.to_csv(yf_volume_csv_file)
+    print(yf_volume_csv_file, df_yf.Volume.shape)
+
     dfhv = compute_hv(df_yf)
-    hv_csv_file = end_date.strftime(f'{LAB_DIR}/output/hv-%F.csv')
+    hv_csv_file = f'{LAB_DIR}/output/hv-{last_date}.csv'
     print('HV output file:', hv_csv_file)
     dfhv.map(lambda x: f'{x:.4f}').to_csv(hv_csv_file)
 
     df = assemble_indicator_df(df_yf)
-    csv_file = end_date.strftime(f'{LAB_DIR}/output/bollinger_bands-%F.csv')
+    csv_file = f'{LAB_DIR}/output/bollinger_bands-{last_date}.csv'
     print('Bollinger bands output file:', csv_file)
     for col in df.columns:
         if col == 'Volume_Avg':
