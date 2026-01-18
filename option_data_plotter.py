@@ -21,7 +21,152 @@ def days_from_earning_reports(df_quotes):
     _df['earningDays'] = _df.earningDays.astype(int)
     return _df.set_index('symbol')
 
-def get_closest_value(df, col, target_value):
+def plot_iv(dfcp, cluster_re=r'^otm_short', dte_lb=5, dte_ub=365):
+    types = ['Calls', 'Puts']
+    cluster_name = cluster_re.replace('^', '').replace('_', ' ')
+    titles = [f'IV of {cluster_name} {_}' for _ in types]
+    fig = make_subplots(rows=2, cols=1, subplot_titles=titles, shared_yaxes=True)
+    fig.update_layout(height=800)
+    for _i, _type in enumerate(types):
+        _filter = (dfcp.type==_type[0]) & dfcp.cluster.str.contains(cluster_re) & (dfcp.dte >= dte_lb) & (dfcp.dte <= dte_ub)
+        _dfiv = dfcp[_filter].groupby(['symbol']).agg(
+            p10_iv = ('ImpVola', lambda x: x.quantile(0.1)),
+            mean_iv = ('ImpVola', 'mean'),
+            p90_iv = ('ImpVola', lambda x: x.quantile(0.9))).reset_index().sort_values(by='mean_iv', ascending=False)
+        chart = px.bar(_dfiv, x='symbol', y=['p10_iv', 'mean_iv', 'p90_iv'], barmode='group')
+        for trace in chart.data:
+            fig.add_trace(trace, row=_i+1, col=1)
+    fig.show()
+
+def plot_theta_of_symbol(dfcp, symbol, dte_lb=5, dte_ub=365):
+    _df = dfcp[(dfcp.symbol == symbol)]
+    _df = _df[(_df.dte >= dte_lb) & (_df.dte <= dte_ub)]
+    groupers = ['type', 'dte', 'cluster']
+    metric = 'Theta'
+    agg_list = ['mean', 'min', 'max']
+    type_list = ['Calls', 'Puts']
+    _dftheta = _df.groupby(groupers, observed=False)[metric].agg(agg_list).reset_index()
+    titles=[f'{_a} theta of {symbol} {_t}' for _t in type_list for _a in agg_list]
+    fig = make_subplots(rows=2, cols=3, subplot_titles=titles, shared_yaxes=True)#, horizontal_spacing=0.02)
+    fig.update_layout(height=800)
+    for _i, _type in enumerate(type_list):
+        __df = _dftheta[_dftheta.type == _type[0]]
+        for _j, _agg_col in enumerate(agg_list):
+            chart = px.scatter(__df, x=groupers[1], y=_agg_col, color=groupers[2])
+            for trace in chart.data:
+                fig.add_trace(trace, row=_i+1, col=_j+1)
+    fig.show()
+
+def get_closest_value_in_column(df, col, target_value):
+    _df = df.loc[:, [col]].drop_duplicates()
+    tmp_diff_col = '__diff'
+    _df[tmp_diff_col] = (_df[col] - target_value).abs()
+    idx = _df[tmp_diff_col].idxmin()
+    return _df.loc[idx, col].item()
+
+def get_theta_curves(dfcp, symbol, strike):
+    _df = dfcp[(dfcp.symbol == symbol) & (dfcp.strike == strike)].loc[:, ['type', 'dte', 'Theta']]
+    _df = _df.pivot_table(values='Theta', index='dte', columns=['type'])
+    return _df
+
+def compute_dtz(dfcp, symbol, opt_type, dte, strike, debug=False):
+    _df = dfcp[(dfcp.symbol == symbol) & (dfcp.dte==dte) & (dfcp.type==opt_type) & (dfcp.strike==strike)]
+    spot_price = _df.lastPrice.iloc[0]
+    premium = _df.mid.iloc[0]
+    theta_curve = get_theta_curves(dfcp[dfcp.dte <= dte], symbol, strike)[opt_type]
+    if theta_curve.shape[0] == 1:
+        theta = theta_curve.iloc[0]
+        dtz = premium/(0 - theta)
+        dth = dtz/2
+        if debug:
+            print(f'find_zero: single dte: premimu {premium}, theta {theta}, dtz {dtz}, dth {dth}')
+        if dtz <= dte:
+            return dth, dtz, 0
+        resid = premium *(dtz/dte - 1)
+        if dth <= dte:
+            return dth, dte, resid
+        return np.nan, dte, resid
+    df_thc = theta_curve[theta_curve.index <= dte].T.reset_index().dropna().rename(columns={opt_type: 'theta'})
+    df_thc['diff_dte'] = df_thc['dte'].diff()
+    df_thc['avg_theta'] = df_thc['theta'].rolling(window=2).mean()
+    df_thc['theta_decay'] = df_thc['diff_dte'] * df_thc['avg_theta']
+    total_decay = df_thc['theta_decay'].sum()
+    if debug:
+        print('Spot price:', spot_price, 'Premium:', premium, 'total decay:', total_decay)
+    df_thc['decay_cumsum']  = df_thc['theta_decay'][::-1].cumsum()[::-1]
+    if debug:
+        df_thc['dte_cumsum'] = df_thc['diff_dte'][::-1].cumsum()[::-1]
+    df_thc['half_resid'] = premium/2 + df_thc['decay_cumsum']
+    df_thc['resid'] = premium + df_thc['decay_cumsum']
+    def find_zero(resid_col):
+        # resid_col is always ascending
+        if df_thc[resid_col].dropna().iloc[0] >= 0:
+                # all positive
+                if debug:
+                    print(f'find_zero: {resid_col} all positive', df_thc[resid_col])
+                return dte
+        if df_thc.iloc[-1][resid_col] <= 0:
+            # all negative
+            if debug:
+                print(f'find_zero: {resid_col} all negative', list(df_thc[resid_col]))
+            row = df_thc.iloc[-1]
+            adj = row['diff_dte'] * row[resid_col]/row['theta_decay']
+            return dte - (row['dte'] - row['diff_dte'] - adj)
+        else:
+            neg_filter = df_thc[resid_col] <= 0
+            neg_idx = df_thc[neg_filter]['dte'].idxmax()
+            pos_filter = df_thc[resid_col] >= 0
+            pos_idx = df_thc[pos_filter]['dte'].idxmin()
+            if debug:
+                print(f'find_zero: {resid_col}: choice between neg_idx.max {neg_idx} and pos_idx.min {pos_idx}')
+            neg_row = df_thc.loc[neg_idx]
+            pos_row = df_thc.loc[pos_idx]
+            neg_ratio = np.abs(neg_row[resid_col]/neg_row['theta_decay'])
+            pos_ratio = np.abs(pos_row[resid_col]/pos_row['theta_decay'])
+            row = df_thc.loc[neg_idx] if neg_ratio < pos_ratio else df_thc.loc[pos_idx]
+            adj = row['diff_dte'] * row[resid_col]/row['theta_decay']
+            if debug:
+                print(f'find_zero: {resid_col}: resid ratio: {neg_ratio} vs {pos_ratio}, {row[resid_col]}, adj: {adj}')
+                print(f'-- row: {row.to_dict()}')
+            if row[resid_col] > 0:
+                # adj is negative, do extrapolation
+                return dte - (row['dte'] + row['diff_dte'] + adj)
+            else:
+                # do interpolation
+                return dte - (row['dte'] - adj)
+    dth = find_zero('half_resid')
+    if premium + total_decay > 0:
+        if debug:
+            print('dtz > dte', 'dth:', dth, 'resid:', (premium + total_decay)/premium)
+        else:
+            return dth, dte, (premium + total_decay)/premium
+    else:
+        dtz = find_zero('resid')
+        if debug:
+            print('dth:', dth, 'dtz:', dtz)
+        else:
+            return dth, dtz, 0
+    return df_thc
+
+def compute_all_dtz_for_symbol(dfcp, symbol, opt_type):
+    dfp = dfcp[(dfcp.symbol==symbol) & (dfcp.type==opt_type) & (dfcp.dte <= 365)]
+    dte_list = dfp.dte.unique()
+    res = []
+    for dte in dte_list:
+        if dte == 0:
+            continue
+        dte = dte.item()
+        strike_list = dfp[dfp.dte==dte].strike.unique()
+        for strike in strike_list:
+            strike = strike.item()
+            _filter = (dfp.dte==dte) & (dfp.strike==strike) & (dfp.type=='P')
+            if dfp[_filter]['moneyness'].iloc[0] >= 1.0 or dfp[_filter]['pctProfit'].iloc[0] <= 0.5:
+                continue
+            dth, dtz, resid = compute_dtz(dfp, symbol, 'P', dte, strike)
+            res.append({'symbol': symbol, 'dte': dte, 'strike': strike, 'dth': dth, 'dtz': dtz, 'resid': resid})
+    return pd.DataFrame(res)
+
+def get_rows_with_closest_value_in_column(df, col, target_value):
     groupers = [c for c in df.columns if c != col]
     df = df.drop_duplicates(subset=groupers + [col])
     tmp_diff_col = '__diff'
@@ -30,12 +175,14 @@ def get_closest_value(df, col, target_value):
     return df.loc[idx].drop(columns=[tmp_diff_col])
 
 def select_pds_deltas(dfcp, dte_lb, dte_ub):
-    dfpds = dfcp[(dfcp.type=='P') & (dfcp.dte >= dte_lb) & (dfcp.dte <= dte_ub)].copy()
-    dfdelta_25 = get_closest_value(dfpds[dfpds.Delta >= -0.25].loc[:, ['symbol', 'dte', 'Delta']], 'Delta', -0.25).set_index(['symbol', 'dte'])
-    dfstrike_atm = get_closest_value(dfpds.loc[:, ['symbol', 'dte', 'strike']], 'strike', dfpds.lastPrice).set_index(['symbol', 'dte'])
-    dfdelta_50 = get_closest_value(dfpds[dfpds.Delta >= -0.6].loc[:, ['symbol', 'dte', 'Delta']], 'Delta', -0.5).set_index(['symbol', 'dte'])
-    dfdelta_5 = get_closest_value(dfpds[dfpds.Delta >= -0.06].loc[:, ['symbol', 'dte', 'Delta']], 'Delta', -0.05).set_index(['symbol', 'dte'])
-    return dfstrike_atm.join(dfdelta_25).join(dfdelta_50, rsuffix='_50').join(dfdelta_5, rsuffix='_5').rename(columns={'strike': 'atm_strike', 'Delta': 'Delta_25'})
+    _df = dfcp[(dfcp.type=='P') & (dfcp.dte >= dte_lb) & (dfcp.dte <= dte_ub)]
+    dfstrike_atm = get_rows_with_closest_value_in_column(_df.loc[:, ['symbol', 'dte', 'strike', 'lastPrice']], 'strike', _df.lastPrice).set_index(['symbol', 'dte'])
+    _df = _df.loc[:, ['symbol', 'dte', 'Delta']]
+    dfdelta_25 = get_rows_with_closest_value_in_column(_df[_df.Delta >= -0.25], 'Delta', -0.25).set_index(['symbol', 'dte'])
+    dfdelta_50 = get_rows_with_closest_value_in_column(_df[_df.Delta >= -0.6],  'Delta', -0.5).set_index(['symbol', 'dte'])
+    dfdelta_5  = get_rows_with_closest_value_in_column(_df[_df.Delta >= -0.06], 'Delta', -0.05).set_index(['symbol', 'dte'])
+    df_join = dfstrike_atm.join(dfdelta_25).join(dfdelta_50, rsuffix='_50').join(dfdelta_5, rsuffix='_5')
+    return df_join.rename(columns={'strike': 'atm_strike', 'Delta': 'Delta_25'})
 
 def put_debit_spread(dfpds, symbol, dte, dfcp, cols=['strike', 'Delta', 'mid', 'OpenInterest', 'ImpVola']):
     delta_dict = dfpds.loc[(symbol, dte)].to_dict()
@@ -207,8 +354,6 @@ def plot_leverage_overpaid(df, delta_lb=0.5, overpaid_ub=0.1, price_lb=5, spread
     _symlist = list(_df.index.get_level_values('symbol').unique())
     nr = 1 if len(_symlist) <= 4 else int(np.ceil(len(_symlist)/4))
     nc = int(np.ceil(len(_symlist)/nr))
-    #plt.rcParams['figure.figsize'] = (nc*5, nr*5)
-    #fig, ax = plt.subplots(nr, nc)
     titles=[f'{symbol} {"~".join((lambda x: [str(x[0]), str(x[-1])])(sorted(_df.loc[symbol].dte.unique())))} DTE' for symbol in _symlist]
     fig = make_subplots(rows=nr, cols=nc, subplot_titles=titles, horizontal_spacing=0.01, vertical_spacing=0.05, shared_xaxes=True, shared_yaxes=True)
     fig.update_layout(height=nr*300, showlegend=False)
