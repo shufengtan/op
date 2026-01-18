@@ -70,82 +70,72 @@ def get_theta_curves(dfcp, symbol, strike):
     return _df
 
 def compute_dtz(dfcp, symbol, opt_type, dte, strike, debug=False):
-    _df = dfcp[(dfcp.symbol == symbol) & (dfcp.dte==dte) & (dfcp.type==opt_type) & (dfcp.strike==strike)]
-    spot_price = _df.lastPrice.iloc[0]
-    premium = _df.mid.iloc[0]
-    theta_curve = get_theta_curves(dfcp[dfcp.dte <= dte], symbol, strike)[opt_type]
+    _df = dfcp[(dfcp.symbol == symbol) & (dfcp.dte==dte) & (dfcp.type==opt_type) & (dfcp.strike==strike)].iloc[0]
+    spot_price = _df.lastPrice
+    premium = _df.mid
+    theta_curve = get_theta_curves(dfcp[(dfcp.dte <= dte)], symbol, strike)[opt_type]
+    if debug:
+        print(f'Spot price: {spot_price}, premium: {premium}')
+    # Special case: only one dte
     if theta_curve.shape[0] == 1:
         theta = theta_curve.iloc[0]
         dtz = premium/(0 - theta)
         dth = dtz/2
         if debug:
-            print(f'find_zero: single dte: premimu {premium}, theta {theta}, dtz {dtz}, dth {dth}')
+            print(f'Single dte {dte}: theta {theta}, dtz {dtz}, dth {dth}')
         if dtz <= dte:
-            return dth, dtz, 0
+            return dth, dtz, 0, premium, spot_price
         resid = premium *(dtz/dte - 1)
         if dth <= dte:
-            return dth, dte, resid
-        return np.nan, dte, resid
+            return dth, dte, resid, premium, spot_price
+        return np.nan, dte, resid, premium, spot_price
     df_thc = theta_curve[theta_curve.index <= dte].T.reset_index().dropna().rename(columns={opt_type: 'theta'})
     df_thc['diff_dte'] = df_thc['dte'].diff()
     df_thc['avg_theta'] = df_thc['theta'].rolling(window=2).mean()
     df_thc['theta_decay'] = df_thc['diff_dte'] * df_thc['avg_theta']
     total_decay = df_thc['theta_decay'].sum()
-    if debug:
-        print('Spot price:', spot_price, 'Premium:', premium, 'total decay:', total_decay)
     df_thc['decay_cumsum']  = df_thc['theta_decay'][::-1].cumsum()[::-1]
-    if debug:
-        df_thc['dte_cumsum'] = df_thc['diff_dte'][::-1].cumsum()[::-1]
+    df_thc['dt_'] = df_thc['diff_dte'][::-1].cumsum()[::-1]
     df_thc['half_resid'] = premium/2 + df_thc['decay_cumsum']
     df_thc['resid'] = premium + df_thc['decay_cumsum']
     def find_zero(resid_col):
         # resid_col is always ascending
         if df_thc[resid_col].dropna().iloc[0] >= 0:
-                # all positive
-                if debug:
-                    print(f'find_zero: {resid_col} all positive', df_thc[resid_col])
-                return dte
-        if df_thc.iloc[-1][resid_col] <= 0:
-            # all negative
+            # all positive
             if debug:
-                print(f'find_zero: {resid_col} all negative', list(df_thc[resid_col]))
+                print(f'find_zero: {resid_col} all positive', df_thc[resid_col].to_dict())
+            return dte
+        if df_thc.iloc[-1][resid_col] <= 0:
+            # all negative, must use the last row
             row = df_thc.iloc[-1]
             adj = row['diff_dte'] * row[resid_col]/row['theta_decay']
-            return dte - (row['dte'] - row['diff_dte'] - adj)
-        else:
-            neg_filter = df_thc[resid_col] <= 0
-            neg_idx = df_thc[neg_filter]['dte'].idxmax()
-            pos_filter = df_thc[resid_col] >= 0
-            pos_idx = df_thc[pos_filter]['dte'].idxmin()
             if debug:
-                print(f'find_zero: {resid_col}: choice between neg_idx.max {neg_idx} and pos_idx.min {pos_idx}')
+                print(f'find_zero: {resid_col} all negative: dt_ {row["dt_"]} - adj {adj}', _df.loc[:, ['dt_', 'resid']].set_index('dt_').to_dict())
+            return row['dt_'] - adj
+        else:
+            neg_idx = df_thc[df_thc[resid_col] <= 0]['dte'].idxmax()
+            pos_idx = df_thc[df_thc[resid_col] >= 0]['dte'].idxmin()
             neg_row = df_thc.loc[neg_idx]
             pos_row = df_thc.loc[pos_idx]
-            neg_ratio = np.abs(neg_row[resid_col]/neg_row['theta_decay'])
-            pos_ratio = np.abs(pos_row[resid_col]/pos_row['theta_decay'])
-            row = df_thc.loc[neg_idx] if neg_ratio < pos_ratio else df_thc.loc[pos_idx]
-            adj = row['diff_dte'] * row[resid_col]/row['theta_decay']
+            delta_dt_ = pos_row['dt_'] - neg_row['dt_']
+            delta_resid = pos_row[resid_col] - neg_row[resid_col]
+            adj = neg_row[resid_col] * delta_dt_ / delta_resid
             if debug:
-                print(f'find_zero: {resid_col}: resid ratio: {neg_ratio} vs {pos_ratio}, {row[resid_col]}, adj: {adj}')
-                print(f'-- row: {row.to_dict()}')
-            if row[resid_col] > 0:
-                # adj is negative, do extrapolation
-                return dte - (row['dte'] + row['diff_dte'] + adj)
-            else:
-                # do interpolation
-                return dte - (row['dte'] - adj)
+                print(f'find_zero: {resid_col}: interpolate between neg_idx.max {neg_idx} and pos_idx.min {pos_idx}')
+                print('delta dt_:', delta_dt_, f'delta {resid_col}:', delta_resid, 'base dt_:', neg_row['dt_'], 'adj:', adj)
+            return neg_row['dt_'] - adj
     dth = find_zero('half_resid')
     if premium + total_decay > 0:
         if debug:
             print('dtz > dte', 'dth:', dth, 'resid:', (premium + total_decay)/premium)
         else:
-            return dth, dte, (premium + total_decay)/premium
+            return dth, dte, (premium + total_decay)/premium, premium, spot_price
     else:
         dtz = find_zero('resid')
         if debug:
             print('dth:', dth, 'dtz:', dtz)
         else:
-            return dth, dtz, 0
+            return dth, dtz, 0, premium, spot_price
     return df_thc
 
 def compute_all_dtz_for_symbol(dfcp, symbol, opt_type):
@@ -162,8 +152,8 @@ def compute_all_dtz_for_symbol(dfcp, symbol, opt_type):
             _filter = (dfp.dte==dte) & (dfp.strike==strike) & (dfp.type=='P')
             if dfp[_filter]['moneyness'].iloc[0] >= 1.0 or dfp[_filter]['pctProfit'].iloc[0] <= 0.5:
                 continue
-            dth, dtz, resid = compute_dtz(dfp, symbol, 'P', dte, strike)
-            res.append({'symbol': symbol, 'dte': dte, 'strike': strike, 'dth': dth, 'dtz': dtz, 'resid': resid})
+            dth, dtz, resid, premium, spot_price = compute_dtz(dfp, symbol, 'P', dte, strike)
+            res.append({'symbol': symbol, 'dte': dte, 'strike': strike, 'dth': dth, 'dtz': dtz, 'resid': resid, 'premium': premium, 'spot_price': spot_price})
     return pd.DataFrame(res)
 
 def get_rows_with_closest_value_in_column(df, col, target_value):
