@@ -70,25 +70,24 @@ def get_theta_curves(dfcp, symbol, strike):
     return _df
 
 def compute_dtz(dfcp, symbol, opt_type, dte, strike, debug=False):
-    _df = dfcp[(dfcp.symbol == symbol) & (dfcp.dte==dte) & (dfcp.type==opt_type) & (dfcp.strike==strike)].iloc[0]
-    spot_price = _df.lastPrice
+    _df = dfcp[(dfcp.symbol == symbol) & (dfcp.dte==dte) & (dfcp['type']==opt_type) & (dfcp.strike==strike)].iloc[0]
     premium = _df.mid
     theta_curve = get_theta_curves(dfcp[(dfcp.dte <= dte)], symbol, strike)[opt_type]
-    if debug:
-        print(f'Spot price: {spot_price}, premium: {premium}')
     # Special case: only one dte
     if theta_curve.shape[0] == 1:
         theta = theta_curve.iloc[0]
+        if theta == 0:
+            return np.inf, np.inf, premium, premium
         dtz = premium/(0 - theta)
         dth = dtz/2
         if debug:
-            print(f'Single dte {dte}: theta {theta}, dtz {dtz}, dth {dth}')
+            print(f'Single dte {dte}: premium: {premium}, theta {theta}, dtz {dtz}, dth {dth}')
         if dtz <= dte:
-            return dth, dtz, 0, premium, spot_price
-        resid = premium *(dtz/dte - 1)
+            return dth, dtz, 0, premium
+        resid = premium *(dte/dtz - 1)
         if dth <= dte:
-            return dth, dte, resid, premium, spot_price
-        return np.nan, dte, resid, premium, spot_price
+            return dth, dte, resid, premium
+        return np.nan, dte, resid, premium
     df_thc = theta_curve[theta_curve.index <= dte].T.reset_index().dropna().rename(columns={opt_type: 'theta'})
     df_thc['diff_dte'] = df_thc['dte'].diff()
     df_thc['avg_theta'] = df_thc['theta'].rolling(window=2).mean()
@@ -115,6 +114,10 @@ def compute_dtz(dfcp, symbol, opt_type, dte, strike, debug=False):
         else:
             neg_idx = df_thc[df_thc[resid_col] <= 0]['dte'].idxmax()
             pos_idx = df_thc[df_thc[resid_col] >= 0]['dte'].idxmin()
+            if neg_idx == pos_idx:
+                # Interpolation is not needed
+                print(f'find_zero {resid_col} hit the jackpot on', symbol, opt_type, dte, strike)
+                return df_thc.loc[neg_idx]['dt_']
             neg_row = df_thc.loc[neg_idx]
             pos_row = df_thc.loc[pos_idx]
             delta_dt_ = pos_row['dt_'] - neg_row['dt_']
@@ -127,33 +130,36 @@ def compute_dtz(dfcp, symbol, opt_type, dte, strike, debug=False):
     dth = find_zero('half_resid')
     if premium + total_decay > 0:
         if debug:
-            print('dtz > dte', 'dth:', dth, 'resid:', (premium + total_decay)/premium)
+            print('dtz > dte', 'premium:', premium, 'dth:', dth, 'resid:', (premium + total_decay)/premium)
         else:
-            return dth, dte, (premium + total_decay)/premium, premium, spot_price
+            return dth, dte, (premium + total_decay)/premium, premium
     else:
         dtz = find_zero('resid')
         if debug:
-            print('dth:', dth, 'dtz:', dtz)
+            print('dth =', dth, 'premium:', premium, 'dtz:', dtz)
         else:
-            return dth, dtz, 0, premium, spot_price
+            return dth, dtz, 0, premium
     return df_thc
 
 def compute_all_dtz_for_symbol(dfcp, symbol, opt_type):
-    dfp = dfcp[(dfcp.symbol==symbol) & (dfcp.type==opt_type) & (dfcp.dte <= 365)]
-    dte_list = dfp.dte.unique()
+    df = dfcp[(dfcp.symbol==symbol) & (dfcp.type==opt_type)]
+    dte_list = df.dte.unique()
     res = []
     for dte in dte_list:
         if dte == 0:
             continue
         dte = dte.item()
-        strike_list = dfp[dfp.dte==dte].strike.unique()
+        strike_list = df[df.dte==dte].strike.unique()
         for strike in strike_list:
             strike = strike.item()
-            _filter = (dfp.dte==dte) & (dfp.strike==strike) & (dfp.type=='P')
-            if dfp[_filter]['moneyness'].iloc[0] >= 1.0 or dfp[_filter]['pctProfit'].iloc[0] <= 0.5:
+            _filter = (df.dte==dte) & (df.strike==strike)
+            if df[_filter]['Bid'].iloc[0] == 0 or df[_filter]['OpenInterest'].iloc[0] == 0:
+                #print('ignored', df[_filter].iloc[0, :-4].to_dict())
                 continue
-            dth, dtz, resid, premium, spot_price = compute_dtz(dfp, symbol, 'P', dte, strike)
-            res.append({'symbol': symbol, 'dte': dte, 'strike': strike, 'dth': dth, 'dtz': dtz, 'resid': resid, 'premium': premium, 'spot_price': spot_price})
+            if len(res) % 100 == 0:
+                print('.', end='')
+            dth, dtz, resid, premium = compute_dtz(df, symbol, opt_type, dte, strike)
+            res.append({'symbol': symbol, 'dte': dte, 'strike': strike, 'dth': dth, 'dtz': dtz, 'resid': resid, 'premium': premium})
     return pd.DataFrame(res)
 
 def get_rows_with_closest_value_in_column(df, col, target_value):
