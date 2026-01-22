@@ -136,9 +136,15 @@ def trap_zero(df_thc, col_to_zero, col_to_return, debug):
         '''
     return neg_row[col_to_return] - neg_row[col_to_zero] * delta_y / delta_x
 
-def calc_half_dte_resid(df_thc, symbol, dte, strike, premium, debug):
+def calc_half_dte_resid(df_thc, symbol, dte, strike, premium, theta_0, debug):
     half_dte = np.ceil(dte/2)
-    if df_thc.shape[0] == 1:
+    total_days = df_thc['diff_dte'].sum()
+    total_decay = df_thc['theta_decay'].sum()
+    if half_dte > total_days:
+        hdte_resid = (premium + total_decay + (half_dte - total_days)*theta_0)/premium
+        if debug:
+            print(f'hdte_resid {symbol} dte {dte} strike {strike} total decay {total_decay} only cover {total_days} days: half_dte {half_dte} premium: {premium} half dte resid: {hdte_resid}')
+    elif df_thc.shape[0] == 1:
         row = df_thc.iloc[-1]
         hdte_resid = 1 + half_dte*row['avg_theta']/premium
         if debug:
@@ -174,8 +180,9 @@ def compute_time_decay_metrics(dfcp, symbol, opt_type, dte, strike, debug=False)
         return np.nan, np.nan, hdte_resid, resid, premium
     theta_curve = get_theta_curve(dfcp[(dfcp.dte <= dte)], symbol, strike, opt_type)
     # Special case: theta_curve has only one dte
+    theta_0 = theta_curve.iloc[0]['Theta']
     if theta_curve.shape[0] == 1:
-        theta = theta_curve.iloc[0]['Theta']
+        theta = theta_0
         if theta == 0:
             if debug:
                 print(f'Single dte with 0 Theta, boring case.')
@@ -194,7 +201,7 @@ def compute_time_decay_metrics(dfcp, symbol, opt_type, dte, strike, debug=False)
         return dth, dte, hdte_resid, resid, premium
     df_thc = prepare_theta_curve(theta_curve, dte, premium).dropna()
     dth = find_zero_resid(df_thc, 'half_resid', dte, debug)
-    hdte_resid = calc_half_dte_resid(df_thc, symbol, dte, strike, premium, debug)
+    hdte_resid = calc_half_dte_resid(df_thc, symbol, dte, strike, premium, theta_0, debug)
     if hdte_resid is None:
         raise Exception(f"Unhandled case: {symbol}, {dte}, {strike}")
     # Compute dtz and resid
@@ -202,8 +209,7 @@ def compute_time_decay_metrics(dfcp, symbol, opt_type, dte, strike, debug=False)
     total_days = df_thc['diff_dte'].sum()
     if dte > total_days:
         # We should use theta from the smallest dte, not average
-        theta = theta_curve.iloc[0]['Theta']
-        resid = (premium + total_decay + (dte - total_days)*theta)/premium
+        resid = (premium + total_decay + (dte - total_days)*theta_0)/premium
         dtz = dte
         if debug:
             print(f'resid {symbol} dte {dte} strike {strike} total decay only cover {total_days} days: total_decay {total_decay} premium: {premium} dth: {dth} half dte resid: {hdte_resid} resid: {resid}')
@@ -227,7 +233,7 @@ def compute_all_time_decay_metrics_for_symbol(dfcp, symbol, opt_type, oi_lb=0):
         for strike in strike_list:
             strike = strike.item()
             _filter = (df.dte==dte) & (df.strike==strike)
-            if df[_filter]['Bid'].iloc[0] == 0 or df[_filter]['OpenInterest'].iloc[0] <= oi_lb:
+            if df[_filter]['Bid'].iloc[0] == 0 and df[_filter]['OpenInterest'].iloc[0] <= oi_lb:
                 ignore_count += 1
                 continue
             if len(res) % 100 == 0:
