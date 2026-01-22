@@ -329,18 +329,32 @@ class OptionChainDownloader(object):
             df1.to_csv(output_file1, index=None)
             self.logger.info(f'save_option_data wrote {output_file1}')
 
-def main():
-    chain_dir = 'chain'
-    quotes_dir = 'quotes'
-    cookie_file = 'cookie.txt'
-    log_file = os.path.join(os.path.dirname(sys.argv[0]), 'logs', os.path.basename(sys.argv[0]).replace('.py', '') + '.log')
+def wait_till_market_open(logger):
+    while True:
+        all_exp_dates = get_option_expiration_dates(3)[0]
+        now = pd.Timestamp.today()
+        print(now.strftime('%m/%d/%Y'), all_exp_dates)
+        if now.strftime('%m/%d/%Y') in all_exp_dates:
+            hours = now - now.normalize()
+            if hours > timedelta(hours=16):
+                time_to_go = (now.normalize() + timedelta(hours=24+9.5) - now).total_seconds()
+                logger.info(f'Sleep for {int(time_to_go/60)} minutes till the next marking opening.')
+                time.sleep(time_to_go)
+                continue
+            if hours < timedelta(hours=9.5):
+                time_to_go = (timedelta(hours=9.5) - hours).total_seconds()
+                logger.info(f'Sleep for {int(time_to_go/60)} minutes till the marking opening.')
+                time.sleep(time_to_go)
+                continue
+        else:
+            next_market_open = pd.Timestamp(all_exp_dates[0]) + timedelta(hours=9.5)
+            time_to_go = (next_market_open - now).total_seconds()
+            logger.info(f'Sleep for {int(time_to_go/60)} minutes till market opening on {next_market_open.strftime("%F %T")} {now.strftime("%F %T")}')
+            time.sleep(time_to_go)
+            continue
+        break
 
-    print('Logger:', log_file)
-    sys.stdout.flush()
-    logger = get_rotating_logger("", log_file)
-    symbol_file = sys.argv[1]
-    ocd = OptionChainDownloader(chain_dir, quotes_dir, cookie_file, logger, strikes='ALL')
-    batch_size = 0 # Download sequentially
+def wait_to_open_symbol_file(symbol_file):
     while True:
         if not os.path.exists(symbol_file):
             time.sleep(2)
@@ -350,21 +364,30 @@ def main():
         if len(symlist) == 0:
             time.sleep(2)
             continue
+        else:
+            return symlist
+
+def main():
+    chain_dir = 'chain'
+    quotes_dir = 'quotes'
+    cookie_file = 'cookie.txt'
+    log_file = os.path.join(os.path.expanduser('~/logs'), os.path.basename(sys.argv[0]).replace('.py', '') + '.log')
+
+    print('Logger:', log_file)
+    sys.stdout.flush()
+    logger = get_rotating_logger("", log_file)
+    symbol_file = sys.argv[1]
+    ocd = OptionChainDownloader(chain_dir, quotes_dir, cookie_file, logger, strikes='ALL')
+    batch_size = 0 # Download sequentially
+    while True:
         if os.path.exists(ocd.abort_signal_file) and not ocd.read_cookie():
             time.sleep(1)
             if batch_size > 0:
                 ocd.kill_zombies()
             continue
-        now = datetime.now()
-        seconds = now.hour*3600 + now.minute*60 + now.second
-        market_open = 9*3600 + 30*60
-        if seconds < market_open:
-            time.sleep(market_open - seconds)
-        else:
-            market_close = 16*3600
-            if seconds >= market_close:
-                time.sleep(10)
-                continue
+        wait_till_market_open(logger)
+        symlist = wait_to_open_symbol_file(symbol_file)
+        wait_till_market_open(logger)
         logger.info(f'BEGIN downloading {len(symlist)} symbols')
         dl_count = ocd.download_option_chain(symlist, batch_size=batch_size, rps=1)
         if dl_count > 0:
