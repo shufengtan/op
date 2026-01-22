@@ -64,10 +64,21 @@ def get_closest_value_in_column(df, col, target_value):
     idx = _df[tmp_diff_col].idxmin()
     return _df.loc[idx, col].item()
 
-def get_theta_curves(dfcp, symbol, strike):
-    _df = dfcp[(dfcp.symbol == symbol) & (dfcp.strike == strike)].loc[:, ['type', 'dte', 'Theta']]
-    _df = _df.pivot_table(values='Theta', index='dte', columns=['type'])
-    return _df
+def get_theta_curve(dfcp, symbol, strike, opt_type):
+    _df = dfcp[(dfcp.symbol == symbol) & (dfcp.strike == strike) & (dfcp.type == opt_type)].loc[:, ['dte', 'Theta']]
+    df_thc = _df.pivot_table(values='Theta', index='dte').reset_index()
+    return df_thc
+
+def prepare_theta_curve(df_thc, dte, premium):
+    df_thc['diff_dte'] = df_thc['dte'].diff()
+    df_thc['avg_theta'] = df_thc['Theta'].rolling(window=2).mean()
+    df_thc['theta_decay'] = df_thc['diff_dte'] * df_thc['avg_theta']
+    df_thc['decay_cumsum']  = df_thc['theta_decay'][::-1].cumsum()[::-1]
+    df_thc['dt_'] = df_thc['diff_dte'][::-1].cumsum()[::-1]
+    df_thc['half_dte'] = df_thc['dt_'] - np.ceil(dte/2)
+    df_thc['half_resid'] = premium/2 + df_thc['decay_cumsum']
+    df_thc['resid'] = premium + df_thc['decay_cumsum']
+    return df_thc
 
 def find_zero_resid(df_thc, resid_col, dte, debug=False):
     # resid_col is always ascending
@@ -125,97 +136,105 @@ def trap_zero(df_thc, col_to_zero, col_to_return, debug):
         '''
     return neg_row[col_to_return] - neg_row[col_to_zero] * delta_y / delta_x
 
+def calc_half_dte_resid(df_thc, symbol, dte, strike, premium, debug):
+    half_dte = np.ceil(dte/2)
+    if df_thc.shape[0] == 1:
+        row = df_thc.iloc[-1]
+        hdte_resid = 1 + half_dte*row['avg_theta']/premium
+        if debug:
+            print(f'hdte_resid from single avg_theta: {symbol} dte {dte} half_dte {half_dte} strike {strike}:', hdte_resid)
+    elif half_dte < df_thc.iloc[0]['dte'] and df_thc.iloc[0]['half_dte'] < 0:
+        # half_dte is beyond the first available dte
+        row = df_thc.iloc[0]
+        hdte_resid = (row['resid'] + row['half_dte']*row['avg_theta'])/premium
+        if debug:
+            print(f'hdte_resid uses extrapolation on first row: {symbol} dte {dte} strike {strike}', hdte_resid)
+    elif df_thc.iloc[-1]['half_dte'] >= 0:
+        # The last row completely cover half_dte
+        row = df_thc.iloc[-1]
+        hdte_resid = (premium + half_dte*row['avg_theta'])/premium
+        if debug:
+            print(f'hdte_resid uses interpolation on last row: {symbol} dte {dte} strike {strike}', hdte_resid)
+    else:
+        hdte_resid = trap_zero(df_thc, 'half_dte', 'resid', debug)/premium
+        if hdte_resid is None:
+            print(f'# trap_zero failed on hdte_resid of {symbol} {opt_type} dte {dte} strike {strike}')
+    return hdte_resid
+
 def compute_time_decay_metrics(dfcp, symbol, opt_type, dte, strike, debug=False):
     '''Returns tuples: days_to_half, days_to_zero, half_dte_resid, expired_resid, premium'''
     _df = dfcp[(dfcp.symbol == symbol) & (dfcp.dte==dte) & (dfcp['type']==opt_type) & (dfcp.strike==strike)].iloc[0]
     premium = _df.mid
-    theta_curve = get_theta_curves(dfcp[(dfcp.dte <= dte)], symbol, strike)[opt_type]
-    # Special case: only one dte
+    if dte == 0:
+        theta = _df.Theta
+        dth = np.nan
+        dtz = np.nan
+        hdte_resid = premium + theta/2
+        resid = premium + theta
+        return np.nan, np.nan, hdte_resid, resid, premium
+    theta_curve = get_theta_curve(dfcp[(dfcp.dte <= dte)], symbol, strike, opt_type)
+    # Special case: theta_curve has only one dte
     if theta_curve.shape[0] == 1:
-        theta = theta_curve.iloc[0]
+        theta = theta_curve.iloc[0]['Theta']
         if theta == 0:
             if debug:
                 print(f'Single dte with 0 Theta, boring case.')
-            return np.inf, np.inf, premium, premium, premium
+            return np.inf, np.inf, 1, 1, premium
         dtz = -premium/theta # theta is negative
         dth = dtz/2
-        hdte_resid = premium + theta*dte/2
+        hdte_resid = 1 + theta*dte/2/premium
         if dtz <= dte:
-            resid = 0
+            resid = 1 + dte * theta / premium
         else: # dtz - dte > 0
-            resid = premium *(dtz - dte)/dtz
+            resid = (dtz - dte)/dtz
             if dth > dte:
                 dth = np.nan
         if debug:
             print(f'Single dte {dte}: premium: {premium}, theta: {theta}, dth: {dth}, dtz: {dtz}, hdte_resid: {hdte_resid}, resid: {resid}')
         return dth, dte, hdte_resid, resid, premium
-    df_thc = theta_curve[theta_curve.index <= dte].T.reset_index().dropna().rename(columns={opt_type: 'theta'})
-    df_thc['diff_dte'] = df_thc['dte'].diff()
-    df_thc['avg_theta'] = df_thc['theta'].rolling(window=2).mean()
-    df_thc['theta_decay'] = df_thc['diff_dte'] * df_thc['avg_theta']
+    df_thc = prepare_theta_curve(theta_curve, dte, premium).dropna()
+    dth = find_zero_resid(df_thc, 'half_resid', dte, debug)
+    hdte_resid = calc_half_dte_resid(df_thc, symbol, dte, strike, premium, debug)
+    if hdte_resid is None:
+        raise Exception(f"Unhandled case: {symbol}, {dte}, {strike}")
+    # Compute dtz and resid
     total_decay = df_thc['theta_decay'].sum()
-    df_thc['decay_cumsum']  = df_thc['theta_decay'][::-1].cumsum()[::-1]
-    df_thc['dt_'] = df_thc['diff_dte'][::-1].cumsum()[::-1]
-    df_thc['half_dte'] = df_thc['dt_'] - np.ceil(dte/2)
-    df_thc['half_resid'] = premium/2 + df_thc['decay_cumsum']
-    df_thc['resid'] = premium + df_thc['decay_cumsum']
-    #if df_thc.dropna().shape[0] == 1:
-    dth = find_zero_resid(df_thc.dropna(), 'half_resid', dte, debug)
-    half_dte = np.ceil(dte/2)
-    if df_thc.dropna().shape[0] == 1:
-        # Use the last row
-        row = df_thc.iloc[-1]
-        hdte_resid = premium + half_dte*row['avg_theta']
+    total_days = df_thc['diff_dte'].sum()
+    if dte > total_days:
+        # We should use theta from the smallest dte, not average
+        theta = theta_curve.iloc[0]['Theta']
+        resid = (premium + total_decay + (dte - total_days)*theta)/premium
+        dtz = dte
         if debug:
-            print(f'hdte_resid prorated on the last row: {symbol} {opt_type} dte {dte} strike {strike}:', hdte_resid)
-    elif half_dte < df_thc['dte'].min():
-        row = df_thc.dropna().iloc[0]
-        hdte_resid = row['resid'] - row['half_dte']*row['avg_theta']
-        if debug:
-            print(f'hdte_resid needs extrapolation on 0 for {symbol} {opt_type} dte {dte} strike {strike}')
-    elif df_thc.iloc[-1]['half_dte'] >= 0:
-        row = df_thc.iloc[-1]
-        hdte_resid = row['resid'] + row['half_dte']*row['avg_theta']
-        if debug:
-            print(f'hdte_resid needs extrapolation on -1 for {symbol} {opt_type} dte {dte} strike {strike}')
+            print(f'resid {symbol} dte {dte} strike {strike} total decay only cover {total_days} days: total_decay {total_decay} premium: {premium} dth: {dth} half dte resid: {hdte_resid} resid: {resid}')
     else:
-        hdte_resid = trap_zero(df_thc.dropna(), 'half_dte', 'resid', debug)
-        if hdte_resid is None:
-            print(f'# trap_zero failed on hdte_resid of {symbol} {opt_type} dte {dte} strike {strike}')
-            #raise Exception('unknown')
-    if premium + total_decay > 0:
+        resid = 1 + total_decay/premium
+        dtz = find_zero_resid(df_thc, 'resid', dte, debug)
         if debug:
-            print('dtz > dte', 'premium:', premium, 'dth:', dth, 'half dte resid:', hdte_resid, 'resid:', (premium + total_decay)/premium)
-        else:
-            return dth, dte, hdte_resid, (premium + total_decay)/premium, premium
-    else:
-        dtz = find_zero_resid(df_thc.dropna(), 'resid', dte, debug)
-        if debug:
-            print('dth =', dth, 'premium:', premium, 'dtz:', dtz, 'half dte resid:', hdte_resid)
-        else:
-            return dth, dtz, hdte_resid, 0, premium
-    return df_thc
+            print(f'resid {symbol} dte {dte} strike {strike} total decay {total_decay} cover dte {dte}, dth: {dth} premium: {premium} dtz: {dtz} half dte resid: {hdte_resid}')
+    return dth, dtz, hdte_resid, resid, premium
 
 def compute_all_time_decay_metrics_for_symbol(dfcp, symbol, opt_type, oi_lb=0):
     '''Returns df with symbol, dte, strike, dth, dtz, half_dte_resid, resid, premium columns'''
     df = dfcp[(dfcp.symbol==symbol) & (dfcp.type==opt_type)]
     dte_list = df.dte.unique()
     res = []
+    ignore_count = 0
+    print(symbol, end='')
     for dte in dte_list:
-        if dte == 0:
-            continue
         dte = dte.item()
         strike_list = df[df.dte==dte].strike.unique()
         for strike in strike_list:
             strike = strike.item()
             _filter = (df.dte==dte) & (df.strike==strike)
             if df[_filter]['Bid'].iloc[0] == 0 or df[_filter]['OpenInterest'].iloc[0] <= oi_lb:
-                #print('ignored', df[_filter].iloc[0, :-4].to_dict())
+                ignore_count += 1
                 continue
             if len(res) % 100 == 0:
                 print('.', end='')
             dth, dtz, hdte_resid, resid, premium = compute_time_decay_metrics(df, symbol, opt_type, dte, strike)
             res.append({'symbol': symbol, 'dte': dte, 'strike': strike, 'dth': dth, 'dtz': dtz, 'hdte_resid': hdte_resid, 'resid': resid, 'premium': premium})
+    print(len(res), 'options loaded', ignore_count, 'ignored')
     return pd.DataFrame(res)
 
 def get_rows_with_closest_value_in_column(df, col, target_value):
