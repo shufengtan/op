@@ -293,14 +293,14 @@ class OptionChainDownloader(object):
         self.logger.info(f'killed {killed} zombies, left {n_alive} children alive.')
 
     def download_option_chain(self, symbol_list, batch_size=10, rps=1):
-        get_chain_file = lambda s: os.path.join(self.chain_dir, s)
-        get_mtime = lambda s: os.path.getmtime(get_chain_file(s)) if os.path.exists(get_chain_file(s)) else 0
-        symbol_list = sorted(symbol_list, key=get_mtime)
         dl_count = 0
         if batch_size == 0:
+            # In sequential mode, sort symbol by mtime so the oldest file will be updated first
+            get_mtime = lambda s: (lambda _f: os.path.getmtime(_f) if os.path.exists(_f) else 0)(os.path.join(self.chain_dir, s))
+            symbol_list = sorted(symbol_list, key=get_mtime)
             cookie_expired = False
             for symbol in symbol_list:
-                for target in [self.get_quotes, self.get_slo_chain_data]:
+                for target in [self.get_slo_chain_data, self.get_quotes]:
                     if target(symbol):
                         dl_count += 1
                         time.sleep(0.005+random.random()*0.005)
@@ -311,6 +311,8 @@ class OptionChainDownloader(object):
                     break
             self.logger.info(f'download_option_chain fetched {dl_count} files sequentially.')
         else:
+            get_size = lambda s: (lambda _f: os.path.getsize(_f) if os.path.exists(_f) else 0)(os.path.join(self.chain_dir, s))
+            symbol_list = sorted(symbol_list, key=get_size)
             for idx in range(0, len(symbol_list), batch_size):
                 dl_count += self.parallel_get_data(symbol_list[idx:idx+batch_size], rps)
             self.logger.info(f'download_option_chain fetched {dl_count} files in parallel with batch size {batch_size}')

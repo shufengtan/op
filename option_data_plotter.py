@@ -220,7 +220,7 @@ def compute_time_decay_metrics(dfcp, symbol, opt_type, dte, strike, debug=False)
             print(f'resid {symbol} dte {dte} strike {strike} total decay {total_decay} cover dte {dte}, dth: {dth} premium: {premium} dtz: {dtz} half dte resid: {hdte_resid}')
     return dth, dtz, hdte_resid, resid, premium
 
-def compute_all_time_decay_metrics_for_symbol(dfcp, symbol, opt_type, oi_lb=0):
+def compute_all_time_decay_metrics_for_symbol(dfcp, symbol, opt_type, ignore_no_bid=True, exclude_0dte=True, oi_lb=0):
     '''Returns df with symbol, dte, strike, dth, dtz, half_dte_resid, resid, premium columns'''
     df = dfcp[(dfcp.symbol==symbol) & (dfcp.type==opt_type)]
     dte_list = df.dte.unique()
@@ -228,19 +228,21 @@ def compute_all_time_decay_metrics_for_symbol(dfcp, symbol, opt_type, oi_lb=0):
     ignore_count = 0
     print(symbol, end='')
     for dte in dte_list:
+        if exclude_0dte and dte == 0:
+            continue
         dte = dte.item()
         strike_list = df[df.dte==dte].strike.unique()
         for strike in strike_list:
             strike = strike.item()
             _filter = (df.dte==dte) & (df.strike==strike)
-            if df[_filter]['Bid'].iloc[0] == 0 and df[_filter]['OpenInterest'].iloc[0] <= oi_lb:
+            if ignore_no_bid and (df[_filter]['Bid'].iloc[0] == 0 or df[_filter]['OpenInterest'].iloc[0] <= oi_lb):
                 ignore_count += 1
                 continue
             if len(res) % 100 == 0:
                 print('.', end='')
             dth, dtz, hdte_resid, resid, premium = compute_time_decay_metrics(df, symbol, opt_type, dte, strike)
             res.append({'symbol': symbol, 'dte': dte, 'strike': strike, 'dth': dth, 'dtz': dtz, 'hdte_resid': hdte_resid, 'resid': resid, 'premium': premium})
-    print(len(res), 'options loaded', ignore_count, 'ignored')
+    print(len(res), 'options loaded,', ignore_count, 'ignored')
     return pd.DataFrame(res)
 
 def get_rows_with_closest_value_in_column(df, col, target_value):
