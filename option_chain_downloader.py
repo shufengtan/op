@@ -294,11 +294,11 @@ class OptionChainDownloader(object):
 
     def download_option_chain(self, symbol_list, batch_size=10, rps=1):
         dl_count = 0
+        cookie_expired = False
         if batch_size == 0:
             # In sequential mode, sort symbol by mtime so the oldest file will be updated first
             get_mtime = lambda s: (lambda _f: os.path.getmtime(_f) if os.path.exists(_f) else 0)(os.path.join(self.chain_dir, s))
             symbol_list = sorted(symbol_list, key=get_mtime)
-            cookie_expired = False
             for symbol in symbol_list:
                 for target in [self.get_slo_chain_data, self.get_quotes]:
                     if target(symbol):
@@ -314,8 +314,11 @@ class OptionChainDownloader(object):
             get_size = lambda s: (lambda _f: os.path.getsize(_f) if os.path.exists(_f) else 0)(os.path.join(self.chain_dir, s))
             symbol_list = sorted(symbol_list, key=get_size)
             for idx in range(0, len(symbol_list), batch_size):
+                if os.path.exists(self.abort_signal_file) and not self.read_cookie():
+                    self.logger.warning(f'download_option_chain found abort signal.')
+                    break
                 dl_count += self.parallel_get_data(symbol_list[idx:idx+batch_size], rps)
-            self.logger.info(f'download_option_chain fetched {dl_count} files in parallel with batch size {batch_size}')
+            self.logger.info(f'download_option_chain requested {dl_count} files in parallel with batch size {batch_size}')
         return dl_count
 
     def save_option_data(self, symlist):
@@ -335,7 +338,7 @@ def wait_till_market_open(logger):
     while True:
         all_exp_dates = get_option_expiration_dates(3)[0]
         now = pd.Timestamp.today()
-        print(now.strftime('%m/%d/%Y'), all_exp_dates)
+        #print(now.strftime('%m/%d/%Y'), all_exp_dates)
         if now.strftime('%m/%d/%Y') in all_exp_dates:
             hours = now - now.normalize()
             if hours > timedelta(hours=16):
@@ -380,7 +383,8 @@ def main():
     logger = get_rotating_logger("", log_file)
     symbol_file = sys.argv[1]
     ocd = OptionChainDownloader(chain_dir, quotes_dir, cookie_file, logger, strikes='ALL')
-    batch_size = 0 # Download sequentially
+    batch_size = 5 # 0: Download sequentially
+    file_ripe_age = 10
     while True:
         if os.path.exists(ocd.abort_signal_file) and not ocd.read_cookie():
             time.sleep(1)
@@ -391,17 +395,21 @@ def main():
         symlist = wait_to_open_symbol_file(symbol_file)
         wait_till_market_open(logger)
         logger.info(f'BEGIN downloading {len(symlist)} symbols')
-        dl_count = ocd.download_option_chain(symlist, batch_size=batch_size, rps=1)
-        if dl_count > 0:
-            chain_mtimes = [os.path.getmtime(f) for f in glob(os.path.join(chain_dir, '*')) if '.' not in f]
-            if len(chain_mtimes) > 0 and max(chain_mtimes) - min(chain_mtimes) < 300:
-                ocd.save_option_data(symlist)
-                awhile = 595 - max(chain_mtimes) + min(chain_mtimes)
-                logger.info(f'FINISH downloading. Sleep {awhile + 5} seconds')
-                time.sleep(5)
-                if batch_size > 0:
-                    ocd.kill_zombies()
-                time.sleep(awhile)
+        dl_count = ocd.download_option_chain(symlist, batch_size=batch_size, rps=5)
+        if dl_count == 0:
+            logger.warning(f'No file downloaded batch_size = {batch_size}')
+            time.sleep(1)
+        while True:
+            all_mtimes = [(lambda x: os.path.getmtime(x) if os.path.exists(x) else 0)(os.path.join(chain_dir, s)) for s in symlist]
+            max_mtime = max(all_mtimes)
+            min_age = time.time() - max_mtime
+            if min_age >= file_ripe_age:
+                logger.info(f'Newest file is over {min_age} seconds old, ripe age is {file_ripe_age}')
+                break
+            else:
+                time.sleep(1)
+        if batch_size > 0:
+            ocd.kill_zombies()
 
 if __name__ == '__main__':
     main()
