@@ -334,6 +334,9 @@ class OptionChainDownloader(object):
             df1.to_csv(output_file1, index=None)
             self.logger.info(f'save_option_data wrote {output_file1}')
 
+    def get_cookie_age(self):
+        return time.time() - (os.path.getmtime(self.cookie_file) if os.path.exists(self.cookie_file) else 0)
+
 def wait_till_market_open(logger):
     while True:
         all_exp_dates = get_option_expiration_dates(3)[0]
@@ -372,7 +375,8 @@ def wait_to_open_symbol_file(symbol_file):
         else:
             return symlist
 
-def main():
+def main(batch_size=5):
+    '''set batch_size to 0 for sequential download'''
     chain_dir = 'chain'
     quotes_dir = 'quotes'
     cookie_file = 'cookie.txt'
@@ -383,13 +387,10 @@ def main():
     logger = get_rotating_logger("", log_file)
     symbol_file = sys.argv[1]
     ocd = OptionChainDownloader(chain_dir, quotes_dir, cookie_file, logger, strikes='ALL')
-    batch_size = 5 # 0: Download sequentially
     file_ripe_age = 10
     while True:
         if os.path.exists(ocd.abort_signal_file) and not ocd.read_cookie():
-            time.sleep(1)
-            if batch_size > 0:
-                ocd.kill_zombies()
+            time.sleep(5)
             continue
         wait_till_market_open(logger)
         symlist = wait_to_open_symbol_file(symbol_file)
@@ -404,12 +405,14 @@ def main():
             max_mtime = max(all_mtimes)
             min_age = time.time() - max_mtime
             if min_age >= file_ripe_age:
-                logger.info(f'Newest file is over {min_age} seconds old, ripe age is {file_ripe_age}')
+                logger.info(f'Newest file is over {int(min_age)} seconds old, ripe age is {file_ripe_age}')
                 break
             else:
                 time.sleep(1)
         if batch_size > 0:
             ocd.kill_zombies()
+        logger.info(f'END downloading. Cookie is {int(ocd.get_cookie_age())} seconds old.')
+        time.sleep(5)
 
 if __name__ == '__main__':
     main()
