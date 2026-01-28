@@ -389,7 +389,7 @@ def main(batch_size=5):
     ocd = OptionChainDownloader(chain_dir, quotes_dir, cookie_file, logger, strikes='ALL')
     file_ripe_age = 10
     while True:
-        if os.path.exists(ocd.abort_signal_file) and not ocd.read_cookie():
+        if os.path.exists(ocd.abort_signal_file) and not ocd.read_cookie() or ocd.get_cookie_age() >= 3510:
             time.sleep(5)
             continue
         wait_till_market_open(logger)
