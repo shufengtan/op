@@ -346,12 +346,12 @@ def wait_till_market_open(logger):
             hours = now - now.normalize()
             if hours > timedelta(hours=16):
                 time_to_go = (now.normalize() + timedelta(hours=24+9.5) - now).total_seconds()
-                logger.info(f'Sleep for {int(time_to_go/60)} minutes till the next marking opening.')
+                logger.info(f'Sleep for {int(time_to_go/60)} minutes till the next market opening.')
                 time.sleep(time_to_go)
                 continue
             if hours < timedelta(hours=9.5):
                 time_to_go = (timedelta(hours=9.5) - hours).total_seconds()
-                logger.info(f'Sleep for {int(time_to_go/60)} minutes till the marking opening.')
+                logger.info(f'Sleep for {int(time_to_go/60)} minutes till the market opening.')
                 time.sleep(time_to_go)
                 continue
         else:
