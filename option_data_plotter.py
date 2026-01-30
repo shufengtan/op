@@ -220,30 +220,47 @@ def compute_time_decay_metrics(dfcp, symbol, opt_type, dte, strike, debug=False)
             print(f'resid {symbol} dte {dte} strike {strike} total decay {total_decay} cover dte {dte}, dth: {dth} premium: {premium} dtz: {dtz} half dte resid: {hdte_resid}')
     return dth, dtz, hdte_resid, resid, premium
 
-def compute_all_time_decay_metrics_for_symbol(dfcp, symbol, opt_type, ignore_no_bid=True, exclude_0dte=True, oi_lb=0):
+def compute_all_time_decay_metrics_for_symbols(dfcp, sym_list, opt_type, d2e, ignore_no_bid=True, exclude_0dte=True, oi_lb=0):
     '''Returns df with symbol, dte, strike, dth, dtz, half_dte_resid, resid, premium columns'''
-    df = dfcp[(dfcp.symbol==symbol) & (dfcp.type==opt_type)]
-    dte_list = df.dte.unique()
     res = []
-    ignore_count = 0
-    print(symbol, end='')
-    for dte in dte_list:
-        if exclude_0dte and dte == 0:
-            continue
-        dte = dte.item()
-        strike_list = df[df.dte==dte].strike.unique()
-        for strike in strike_list:
-            strike = strike.item()
-            _filter = (df.dte==dte) & (df.strike==strike)
-            if ignore_no_bid and (df[_filter]['Bid'].iloc[0] == 0 or df[_filter]['OpenInterest'].iloc[0] <= oi_lb):
-                ignore_count += 1
+    for symbol in sym_list:
+        df = dfcp[(dfcp.symbol==symbol) & (dfcp.type==opt_type)]
+        dte_list = df.dte.unique()
+        load_count = 0
+        ignore_count = 0
+        print(symbol, end='')
+        for dte in dte_list:
+            if exclude_0dte and dte == 0:
                 continue
-            if len(res) % 100 == 0:
-                print('.', end='')
-            dth, dtz, hdte_resid, resid, premium = compute_time_decay_metrics(df, symbol, opt_type, dte, strike)
-            res.append({'symbol': symbol, 'dte': dte, 'strike': strike, 'dth': dth, 'dtz': dtz, 'hdte_resid': hdte_resid, 'resid': resid, 'premium': premium})
-    print(len(res), 'options loaded,', ignore_count, 'ignored')
-    return pd.DataFrame(res)
+            dte = dte.item()
+            strike_list = df[df.dte==dte].strike.unique()
+            for strike in strike_list:
+                strike = strike.item()
+                _filter = (df.dte==dte) & (df.strike==strike)
+                if ignore_no_bid and (df[_filter]['Bid'].iloc[0] == 0 or df[_filter]['OpenInterest'].iloc[0] <= oi_lb):
+                    ignore_count += 1
+                    continue
+                load_count += 1
+                if load_count % 100 == 0:
+                    print('.', end='')
+                dth, dtz, hdte_resid, resid, premium = compute_time_decay_metrics(df, symbol, opt_type, dte, strike)
+                res.append({'symbol': symbol, 'dte': dte, 'strike': strike, 'dth': dth, 'dtz': dtz, 'hdte_resid': hdte_resid, 'resid': resid, 'premium': premium})
+        print(load_count, 'options loaded,', ignore_count, 'ignored')
+    df_res = pd.DataFrame(res)
+    df_res['dthr'] = df_res.dth/df_res.dte
+    df_res['dtzr'] = df_res.dtz/df_res.dte
+    _index = ['symbol', 'dte', 'strike']
+    df_res = df_res.set_index(_index)
+    if opt_type == 'C':
+        add_cols = ['lastPrice', 'pctSpread', 'Delta', 'Theta', 'expDt', 'OpenInterest', 'overpaid', 'leverage']
+    elif opt_type == 'P':
+        add_cols = ['lastPrice', 'pctSpread', 'Delta', 'Theta', 'moneyness', 'expDt', 'OpenInterest']
+    df_res = df_res.join(dfcp[dfcp.type==opt_type].set_index(_index).loc[:, add_cols]).reset_index()
+    if opt_type == 'P':
+        df_res['dteProfit'] = df_res.premium/df_res.strike/df_res.dte*100*365
+        df_res['hdteProfit'] = df_res.premium/2/df_res.strike/np.ceil(df_res.dth)*100*365
+    df_res['E'] = df_res.symbol.apply(d2e.get)
+    return df_res
 
 def get_rows_with_closest_value_in_column(df, col, target_value):
     groupers = [c for c in df.columns if c != col]
