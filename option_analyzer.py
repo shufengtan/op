@@ -10,6 +10,8 @@ import logging
 import time
 from datetime import datetime, timedelta
 import json
+from multiprocessing import Process
+from subprocess import getoutput
 from dataclasses import dataclass, field
 
 @dataclass(slots=True)
@@ -191,6 +193,7 @@ class OptionAnalyzer:
         now = pd.Timestamp.now()
         _g = pd.concat([_df._.symbol, pd.to_datetime(_df.__.quote_dt, format='%m/%d/%Y %I:%M:%S%p'), pd.to_datetime(_df.__.load_dt)], axis=1).groupby('symbol')
         df_age = (now - _g.max()).map(lambda x: x.seconds).rename(columns={'quote_dt': 'quote_age', 'load_dt': 'load_age'})
+        df_age = df_age.sort_values(by='load_age')
         return df_age
 
     def select_options_by_type(self, df_raw, opt_type):
@@ -507,22 +510,25 @@ class OptionAnalyzer:
                         print('.', end='')
                     premium = _df.iloc[0].mid
                     dth, dtz, hdte_resid, resid = self.compute_time_decay_metrics(df_thc, symbol, strike, dte, premium)
-                    res.append({'symbol': symbol, 'dte': dte, 'strike': strike, 'dth': dth, 'dtz': dtz, 'hdte_resid': hdte_resid, 'resid': resid, 'premium': premium})
+                    res.append({'symbol': symbol, 'dte': dte, 'strike': strike, 'dth': dth, 'dtz': dtz, 'hdte_resid': hdte_resid, 'resid': resid})
             print(load_count, 'options loaded,', ignore_count, 'ignored,', '%.1f seconds' % (time.time() - t0))
         print('Total time:', int(time.time() - t00), 'seconds')
         df_res = pd.DataFrame(res)
+        df_res = self.finalize_time_decay_df(df_res, df, opt_type, d2e)
+        return df_res
+
+    def finalize_time_decay_df(self, df_res, df, opt_type, d2e):
         df_res['dthr'] = df_res.dth/df_res.dte
         df_res['dtzr'] = df_res.dtz/df_res.dte
         _index = ['symbol', 'dte', 'strike']
         df_res = df_res.set_index(_index)
+        add_cols = ['mid', 'lastPrice', 'pctSpread', 'Delta', 'Theta', 'moneyness', 'expDt', 'OpenInterest']
         if opt_type == 'C':
-            add_cols = ['lastPrice', 'pctSpread', 'Delta', 'Theta', 'expDt', 'OpenInterest', 'overpaid', 'leverage']
-        elif opt_type == 'P':
-            add_cols = ['lastPrice', 'pctSpread', 'Delta', 'Theta', 'moneyness', 'expDt', 'OpenInterest']
+            add_cols += ['overpaid', 'leverage']
         df_res = df_res.join(df.set_index(_index).loc[:, add_cols]).reset_index()
         if opt_type == 'P':
-            df_res['dteProfit'] = df_res.premium/df_res.strike/df_res.dte*100*365
-            df_res['hdteProfit'] = df_res.premium/2/df_res.strike/np.ceil(df_res.dth)*100*365
+            df_res['dteProfit'] = df_res.mid/df_res.strike/df_res.dte*100*365
+            df_res['hdteProfit'] = df_res.mid/2/df_res.strike/np.ceil(df_res.dth)*100*365
         df_res['E'] = df_res.symbol.apply(d2e.get)
         return df_res
 
@@ -758,3 +764,116 @@ class OptionAnalyzer:
                 fig.add_trace(trace, row=i//nc+1, col=i%nc+1)
         fig.show()
         return _df
+
+@dataclass(slots=True)
+class ParallelOptionCalculator:
+    df: pd.DataFrame
+    optana: OptionAnalyzer
+    buffer_dir: str
+    opt_type: str = ''
+    exclude_0dte: bool = True
+    ignore_no_bid: bool = True
+    oi_lb: int = 100
+    proc_dict: dict = field(default_factory=dict)
+    logger: logging.Logger = field(init=False)
+    def __post_init__(self):
+        import resource
+        if not os.path.exists(self.buffer_dir):
+            os.mkdir(self.buffer_dir)
+        self.logger = self.optana.logger
+        assert 'type' not in self.df.columns or self.df.type.nunique == 1
+        self.opt_type = 'P' if self.df.Delta.min() < 0 else 'C'
+        self.logger.info(f'Assume option type is {self.opt_type} based on delta')
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        self.logger.info(f"Current file limits - Soft: {soft}, Hard: {hard}")
+        resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+        new_soft, new_hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        self.logger.info(f"New file limits - Soft: {new_soft}, Hard: {new_hard}")
+
+    def do_theta_curves(self, symbol, strike, df_sym):
+        optana = self.optana
+        df_thc = optana.get_theta_curve(df_sym, symbol, strike)
+        df_thc = optana.setup_trapezoidal_decay(df_thc)
+        self.logger.debug(f'do_theta_curves {symbol}~{strike} df_sym shape: {df_sym.shape}, df_thc shape: {df_thc.shape}')
+        strike_filter = (df_sym.strike == strike)
+        ignore_count = 0
+        res = []
+        for dte in sorted(df_thc.dte, reverse=True):
+            dte_row = df_sym[strike_filter & (df_sym.dte == dte)]
+            assert dte_row.shape[0] == 1
+            dte_row = dte_row.iloc[0]
+            if (self.exclude_0dte and dte == 0) or (self.ignore_no_bid and (dte_row['Bid'] == 0 or dte_row['OpenInterest'] <= self.oi_lb)):
+                ignore_count += 1
+                continue
+            dth, dtz, hdte_resid, resid = optana.compute_time_decay_metrics(df_thc, symbol, strike, dte, dte_row['mid'])
+            res.append({'symbol': symbol, 'strike': strike, 'dte': dte, 'dth': dth, 'dtz': dtz, 'hdte_resid': hdte_resid, 'resid': resid})
+        if len(res) > 0:
+            output_file = self.get_output_file_name(symbol, strike)
+            with open(output_file, 'w') as wfo:
+                pd.DataFrame(res).to_csv(wfo, index=None)
+            self.logger.debug(f'do_theta_curves wrote {len(res)} rows to {output_file}, ignored {ignore_count} DTEs.')
+        else:
+            self.logger.debug(f'do_theta_curves {symbol}~{strike} ignored {ignore_count} DTEs.')
+
+    def get_output_file_name(self, symbol, strike):
+        return os.path.join(self.buffer_dir, f'{symbol}~{strike}.csv')
+
+    def do_all_theta_curves(self, symlist):
+        df = self.df
+        assert 'type' not in df.columns or df.type.nunique == 1
+        opt_type = 'P' if df.Delta.min() < 0 else 'C'
+        print(f'Assume all are {opt_type} options based on delta sign. df shape:', df.shape)
+        proc_dict = self.proc_dict
+        start_time = time.time()
+        for symbol in symlist:
+            df_sym = df[(df.symbol==symbol)]
+            if df_sym.shape[0] == 0:
+                print(symbol, 'not found in df')
+                continue
+            strike_list = df_sym.strike.unique()
+            t0 = time.perf_counter()
+            for strike in strike_list:
+                proc = Process(target=self.do_theta_curves, args=(symbol, strike, df_sym))
+                proc_dict[(symbol, strike)] = proc
+                proc.start()
+            print(symbol, len(strike_list), 'theta curves processed in %.1f seconds' % (time.perf_counter() - t0))
+        for _ in range(100):
+            if self.count_zombies() > 0:
+                self.kill_zombies()
+                time.sleep(0.1)
+        print(f'Completed {len(symlist)} symbols in %.1f seconds' % (time.time() - start_time))
+        return self.get_output_files(symlist, start_time)
+
+    def assemble_time_decay_df(self, output_files, d2e):
+        df_res = pd.concat([pd.read_csv(f) for f in output_files])
+        return self.optana.finalize_time_decay_df(df_res, self.df, self.opt_type, d2e)
+
+    def get_output_files(self, symlist, mtime_lb):
+        output_list = []
+        for symbol in symlist:
+            output_list += [f for f in glob(self.get_output_file_name(symbol, '*')) if os.path.getmtime(f) >= mtime_lb and os.path.getsize(f) > 0]
+        return output_list
+
+    def count_zombies(self):
+        return len([x for x in getoutput(f'/usr/bin/ps --ppid {os.getpid()} -oargs').splitlines() if x.find('<defunct>') > 0])
+
+    def kill_zombies(self):
+        n_alive = 0
+        killed = 0
+        key_list = list(self.proc_dict)
+        for key in key_list:
+            proc = self.proc_dict[key]
+            if proc.is_alive():
+                n_alive += 1
+            elif proc.exitcode is not None:
+                proc.join(0.1)
+                proc.close()
+                killed += 1
+                self.proc_dict.pop(key)
+        self.logger.info(f'killed {killed} zombies, left {n_alive} children alive.')
+
+    def list_open_files(self):
+        import psutil
+        proc = psutil.Process(os.getpid())
+        open_files = proc.open_files()
+        return [file.path for file in open_files]
