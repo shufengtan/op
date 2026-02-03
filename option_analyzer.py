@@ -30,6 +30,8 @@ class OptionAnalyzer:
         if len(symlist) > 0:
             self.logger.info(f'{len(symlist)} symbols, age: {age_dict[symlist[0]]:.01f}" {age_dict[symlist[-1]]:.01f}", {" ".join(symlist)}')
         else:
+            age_limit = min(age_dict.values()) + age_ub
+            symlist = [os.path.basename(f) for f, age in age_dict.items() if age <= age_limit]
             self.logger.warning(f'No update in the past {age_ub} seconds.')
         return symlist
         
