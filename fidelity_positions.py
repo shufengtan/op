@@ -32,6 +32,13 @@ class FidelityPositions:
         df_sp['strike'] = pd.to_numeric(df_sp['strike'], errors='coerce').astype(float)
         return pd.concat([df_sp, _df.loc[:, ['Quantity', 'Last Price', 'Average Cost Basis', 'Cost Basis Total']]], axis=1)
 
+    def capital_risks(self, df_pos):
+        _dfc = df_pos[df_pos.type == 'C']
+        c_risk = (_dfc.Quantity * 100 * _dfc['Average Cost Basis']).sum().item()
+        _dfp = df_pos[df_pos.type == 'P']
+        p_risk = (-100*_dfp.Quantity * _dfp['strike']).sum().item()
+        return {'C_risk': c_risk, 'P_risk': p_risk}
+
 if __name__ == '__main__':
     import sys
     csv_file = sys.argv[1]

@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import plotly.io as pio
 from plotly.subplots import make_subplots
 import plotly.graph_objects as pgo
 import sys
@@ -19,10 +20,13 @@ class OptionAnalyzer:
     quotes_dir: str
     chain_dir: str
     last_price: dict = field(default_factory=dict)
+    d2e: dict = field(default_factory=dict)
     logger: logging.Logger = logging.getLogger('OptionAnalyzer')
+    pio_template: str = 'none'
     def __post_init__(self):
         self.logger.addHandler(logging.StreamHandler(sys.stdout))
         self.logger.setLevel(logging.INFO)
+        pio.templates.default  = self.pio_template
 
     def get_updated_symbol_list(self, age_ub=60):
         age_dict = dict([(os.path.basename(f), time.time() - os.path.getmtime(f)) for f in glob(os.path.join(self.chain_dir, '*'))])
@@ -108,7 +112,9 @@ class OptionAnalyzer:
         _df['earningDays'] = _df.earningDays.astype(int)
         if _df.shape[0] == 0:
             self.logger.warning('No earning date in df_quotes')
-        return _df.set_index('symbol')
+        _df = _df.set_index('symbol')
+        self.d2e = _df['earningDays'].to_dict()
+        return _df
 
     def build_option_df(self, symlist):
         log = self.logger
@@ -235,10 +241,31 @@ class OptionAnalyzer:
         df['dte_cluster'] = pd.cut(df['dte'], bins=bins, labels=labels, right=False)
         return df
 
-    def calc_spread_stats(self, df, bid_lb=0.5, oi_lb=100):
+    def calc_mean_median(self, df, col, bid_lb=0.5, oi_lb=100):
         _g = df[(df.Bid >= bid_lb) & (df.OpenInterest >= oi_lb)].groupby('symbol')
-        _df = pd.DataFrame({'mean spread': _g.pctSpread.mean(), 'median': _g.pctSpread.median()})
+        _df = pd.DataFrame({f'mean_{col}': _g[col].mean(), f'median_{col}': _g[col].median()})
+        _df = _df.sort_values(by=f'mean_{col}')
         return _df
+
+    def plot_option_stats(self, dfcp, metrics = ['pctSpread', 'OpenInterest', 'ImpVola']):
+        if 'type' in dfcp.columns:
+            opt_types = sorted(dfcp.type.unique())
+        elif dfcp.Delta.min() < 0:
+            opt_types = ['P']
+        else:
+            opt_types = ['C']
+        titles = [f'{col} mean and median - {_t} options' for col in metrics for _t in opt_types]
+        fig = make_subplots(rows=len(metrics), cols=len(opt_types), subplot_titles=titles, shared_yaxes=True)
+        fig.update_layout(height=len(metrics)*300, showlegend=False)
+        if len(opt_types) == 1:
+            fig.update_layout(width=dfcp.symbol.nunique()* 50)
+        for _i, metric in enumerate(metrics):
+            for _j, _t in enumerate(opt_types):
+                _df = dfcp[dfcp.type == _t] if 'type' in dfcp.columns else dfcp
+                chart = px.bar(self.calc_mean_median(_df, metric))
+                for trace in chart.data:
+                    fig.add_trace(trace, row=_i+1, col=_j+1)
+        fig.show()
 
     def plot_iv_statistics(self, dfcp, cluster_re=r'^otm_short', dte_lb=5, dte_ub=365):
         types = ['Calls', 'Puts']
@@ -382,108 +409,8 @@ class OptionAnalyzer:
             if hdte_resid is None:
                 log.warning(f'# trap_zero failed on hdte_resid of {symbol} {opt_type} dte {dte} strike {strike}')
         return hdte_resid
-    
-    def old_compute_time_decay_metrics(self, df, symbol, dte, strike, debug=False):
-        '''Returns tuples: days_to_half, days_to_zero, half_dte_resid, expired_resid, premium'''
-        log = self.logger
-        _df = df[(df.symbol == symbol) & (df.dte==dte) & (df.strike==strike)].iloc[0]
-        premium = _df.mid
-        if dte == 0:
-            theta = _df.Theta
-            dth = np.nan
-            dtz = np.nan
-            hdte_resid = premium + theta/2
-            resid = premium + theta
-            return np.nan, np.nan, hdte_resid, resid, premium
-        theta_curve = self.get_theta_curve(df[(df.dte <= dte)], symbol, strike)
-        # Special case: theta_curve has only one dte
-        theta_0 = theta_curve.iloc[0]['Theta']
-        if theta_curve.shape[0] == 1:
-            theta = theta_0
-            if theta == 0:
-                log.debug(f'# Single dte with 0 Theta, boring case.')
-                return np.inf, np.inf, 1, 1, premium
-            dtz = -premium/theta # theta is negative
-            dth = dtz/2
-            hdte_resid = 1 + theta*dte/2/premium
-            if dtz <= dte:
-                resid = 1 + dte * theta / premium
-            else: # dtz - dte > 0
-                resid = (dtz - dte)/dtz
-                if dth > dte:
-                    dth = np.nan
-            log.debug(f'# Single dte {dte}: premium: {premium}, theta: {theta}, dth: {dth}, dtz: {dtz}, hdte_resid: {hdte_resid}, resid: {resid}')
-            return dth, dte, hdte_resid, resid, premium
-        df_thc = self.setup_trapezoidal_decay(theta_curve)
-        df_thc = self.prepare_theta_curve(df_thc, dte, premium).dropna()
-        dth = self.find_zero_resid(df_thc, 'half_resid', dte, debug)
-        hdte_resid = self.calc_half_dte_resid(df_thc, symbol, dte, strike, premium, theta_0, debug)
-        if hdte_resid is None:
-            raise Exception(f"Unhandled case: {symbol}, {dte}, {strike}")
-        # Compute dtz and resid
-        total_decay = df_thc['theta_decay'].sum()
-        total_days = df_thc['diff_dte'].sum()
-        if dte > total_days:
-            # We should use theta from the smallest dte, not average
-            resid = (premium + total_decay + (dte - total_days)*theta_0)/premium
-            dtz = dte
-            log.debug(f'#resid {symbol} dte {dte} strike {strike} total decay only cover {total_days} days: total_decay {total_decay} premium: {premium} dth: {dth} half dte resid: {hdte_resid} resid: {resid}')
-        else:
-            resid = 1 + total_decay/premium
-            dtz = self.find_zero_resid(df_thc, 'resid', dte, debug)
-            log.debug(f'#resid {symbol} dte {dte} strike {strike} total decay {total_decay} cover dte {dte}, dth: {dth} premium: {premium} dtz: {dtz} half dte resid: {hdte_resid}')
-        return dth, dtz, hdte_resid, resid, premium
-    
-    def old_compute_all_time_decay_metrics_for_symbols(self, df, sym_list, d2e, ignore_no_bid=True, exclude_0dte=True, oi_lb=0):
-        '''Returns df with symbol, dte, strike, dth, dtz, half_dte_resid, resid, premium columns
-        input df must be either put or call, not both'''
-        assert 'type' not in df.columns or df.type.nunique == 1
-        opt_type = 'P' if df.Delta.min() < 0 else 'C'
-        print(f'Assume option type is {opt_type} based on delta')
-        res = []
-        t00 = time.time()
-        for symbol in sym_list:
-            _df = df[(df.symbol==symbol)]
-            dte_list = _df.dte.unique()
-            load_count = 0
-            ignore_count = 0
-            print(symbol, end='')
-            t0 = time.time()
-            for dte in dte_list:
-                if exclude_0dte and dte == 0:
-                    continue
-                dte = dte.item()
-                strike_list = _df[_df.dte==dte].strike.unique()
-                for strike in strike_list:
-                    strike = strike.item()
-                    _filter = (_df.dte==dte) & (_df.strike==strike)
-                    if ignore_no_bid and (_df[_filter]['Bid'].iloc[0] == 0 or _df[_filter]['OpenInterest'].iloc[0] <= oi_lb):
-                        ignore_count += 1
-                        continue
-                    load_count += 1
-                    if load_count % 100 == 0:
-                        print('.', end='')
-                    dth, dtz, hdte_resid, resid, premium = self.old_compute_time_decay_metrics(_df, symbol, dte, strike)
-                    res.append({'symbol': symbol, 'dte': dte, 'strike': strike, 'dth': dth, 'dtz': dtz, 'hdte_resid': hdte_resid, 'resid': resid, 'premium': premium})
-            print(load_count, 'options loaded,', ignore_count, 'ignored,', '%.1f seconds' % (time.time() - t0))
-        print('Total time:', int(time.time() - t00), 'seconds')
-        df_res = pd.DataFrame(res)
-        df_res['dthr'] = df_res.dth/df_res.dte
-        df_res['dtzr'] = df_res.dtz/df_res.dte
-        _index = ['symbol', 'dte', 'strike']
-        df_res = df_res.set_index(_index)
-        if opt_type == 'C':
-            add_cols = ['lastPrice', 'pctSpread', 'Delta', 'Theta', 'expDt', 'OpenInterest', 'overpaid', 'leverage']
-        elif opt_type == 'P':
-            add_cols = ['lastPrice', 'pctSpread', 'Delta', 'Theta', 'moneyness', 'expDt', 'OpenInterest']
-        df_res = df_res.join(df.set_index(_index).loc[:, add_cols]).reset_index()
-        if opt_type == 'P':
-            df_res['dteProfit'] = df_res.premium/df_res.strike/df_res.dte*100*365
-            df_res['hdteProfit'] = df_res.premium/2/df_res.strike/np.ceil(df_res.dth)*100*365
-        df_res['E'] = df_res.symbol.apply(d2e.get)
-        return df_res
 
-    def compute_all_time_decay_metrics_for_symbols(self, df, sym_list, d2e, ignore_no_bid=True, exclude_0dte=True, oi_lb=0):
+    def compute_all_time_decay_metrics_for_symbols(self, df, sym_list, ignore_no_bid=True, exclude_0dte=True, oi_lb=0):
         '''Returns df with symbol, dte, strike, dth, dtz, half_dte_resid, resid, premium columns
         input df must be either put or call, not both'''
         assert 'type' not in df.columns or df.type.nunique == 1
@@ -516,10 +443,10 @@ class OptionAnalyzer:
             print(load_count, 'options loaded,', ignore_count, 'ignored,', '%.1f seconds' % (time.time() - t0))
         print('Total time:', int(time.time() - t00), 'seconds')
         df_res = pd.DataFrame(res)
-        df_res = self.finalize_time_decay_df(df_res, df, opt_type, d2e)
+        df_res = self.finalize_time_decay_df(df_res, df, opt_type)
         return df_res
 
-    def finalize_time_decay_df(self, df_res, df, opt_type, d2e):
+    def finalize_time_decay_df(self, df_res, df, opt_type):
         df_res['dthr'] = df_res.dth/df_res.dte
         df_res['dtzr'] = df_res.dtz/df_res.dte
         _index = ['symbol', 'dte', 'strike']
@@ -531,7 +458,7 @@ class OptionAnalyzer:
         if opt_type == 'P':
             df_res['dteProfit'] = df_res.mid/df_res.strike/df_res.dte*100*365
             df_res['hdteProfit'] = df_res.mid/2/df_res.strike/np.ceil(df_res.dth)*100*365
-        df_res['E'] = df_res.symbol.apply(d2e.get)
+        df_res['E'] = df_res.symbol.apply(self.d2e.get)
         return df_res
 
     def shortcut_time_decay(self, df_thc, symbol, strike, dte, premium):
@@ -577,6 +504,24 @@ class OptionAnalyzer:
             dtz = self.find_zero_resid(df_thc, 'resid', dte, debug=True)
             self.logger.debug(f'resid {symbol} dte {dte} strike {strike} total decay {total_decay} cover dte {dte}, dth: {dth} premium: {premium} dtz: {dtz} half dte resid: {hdte_resid}')
         return dth, dtz, hdte_resid, resid
+
+    def compute_time_decay_metrics_for_positions(self, df_pos, dfcp):
+        res = {}
+        df_dict = {}
+        for opt_type in df_pos.type.unique():
+            res[opt_type] = []
+            ss2dte_mid = (df_pos[df_pos.type == opt_type].loc[:, ['symbol', 'strike', 'dte', 'mid']].set_index(['symbol', 'strike']).to_dict())
+            for ss, dte in ss2dte_mid['dte'].items():
+                symbol, strike = ss
+                premium = ss2dte_mid['mid'][ss]
+                df_thc = self.get_theta_curve(dfcp[dfcp.dte <= dte], symbol, strike)
+                df_thc = self.setup_trapezoidal_decay(df_thc)
+                dth, dtz, hdte_resid, resid = self.compute_time_decay_metrics(df_thc, symbol, strike, dte, premium)
+                self.logger.debug(f'time_decay_metrics for {opt_type} {ss} DTE {dte}: {dth}, {dtz}, {hdte_resid}, {resid}')
+                res[opt_type].append({'type': opt_type, 'symbol': symbol, 'dte': dte, 'strike': strike, 'dth': dth, 'dtz': dtz, 'hdte_resid': hdte_resid, 'resid': resid})
+            df_res = pd.DataFrame(res[opt_type])
+            df_dict[opt_type] = self.finalize_time_decay_df(df_res, dfcp[dfcp.type==opt_type], opt_type)
+        return df_dict
 
     def get_rows_with_closest_value_in_column(self, df, col, target_value):
         groupers = [c for c in df.columns if c != col]
@@ -822,9 +767,7 @@ class ParallelOptionCalculator:
 
     def do_all_theta_curves(self, symlist):
         df = self.df
-        assert 'type' not in df.columns or df.type.nunique == 1
-        opt_type = 'P' if df.Delta.min() < 0 else 'C'
-        print(f'Assume all are {opt_type} options based on delta sign. df shape:', df.shape)
+        opt_type = self.opt_type
         proc_dict = self.proc_dict
         start_time = time.time()
         for symbol in symlist:
@@ -839,16 +782,18 @@ class ParallelOptionCalculator:
                 proc_dict[(symbol, strike)] = proc
                 proc.start()
             print(symbol, len(strike_list), 'theta curves processed in %.1f seconds' % (time.perf_counter() - t0))
-        for _ in range(100):
-            if self.count_zombies() > 0:
-                self.kill_zombies()
-                time.sleep(0.1)
+        for i in range(1, 100):
+            if self.count_zombies() == 0:
+                self.logger.debug(f'zombie count = 0 after {i} kills')
+                break
+            self.kill_zombies()
+            time.sleep(0.1)
         print(f'Completed {len(symlist)} symbols in %.1f seconds' % (time.time() - start_time))
         return self.get_output_files(symlist, start_time)
 
-    def assemble_time_decay_df(self, output_files, d2e):
+    def assemble_time_decay_df(self, output_files):
         df_res = pd.concat([pd.read_csv(f) for f in output_files])
-        return self.optana.finalize_time_decay_df(df_res, self.df, self.opt_type, d2e)
+        return self.optana.finalize_time_decay_df(df_res, self.df, self.opt_type)
 
     def get_output_files(self, symlist, mtime_lb):
         output_list = []
