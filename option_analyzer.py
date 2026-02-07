@@ -197,9 +197,15 @@ class OptionAnalyzer:
         df['load_dt'] = mtime
         return df
 
+    def get_data_timestamps(self, df_raw):
+        _df = pd.concat([df_raw._.symbol, df_raw.__.quote_dt, df_raw.__.load_dt], axis=1).drop_duplicates()
+        _df['quote_dt'] = pd.to_datetime(_df.quote_dt, format='%m/%d/%Y %I:%M:%S%p')
+        _df['load_dt']  = pd.to_datetime(_df.load_dt)
+        return _df
+
     def check_data_age(self, _df):
         now = pd.Timestamp.now()
-        _g = pd.concat([_df._.symbol, pd.to_datetime(_df.__.quote_dt, format='%m/%d/%Y %I:%M:%S%p'), pd.to_datetime(_df.__.load_dt)], axis=1).groupby('symbol')
+        _g = self.get_data_timestamps(_df).groupby('symbol')
         df_age = (now - _g.max()).map(lambda x: x.seconds).rename(columns={'quote_dt': 'quote_age', 'load_dt': 'load_age'})
         df_age = df_age.sort_values(by='load_age')
         return df_age
@@ -730,12 +736,13 @@ class ParallelOptionCalculator:
         self.logger = self.optana.logger
         assert 'type' not in self.df.columns or self.df.type.nunique == 1
         self.opt_type = 'P' if self.df.Delta.min() < 0 else 'C'
-        self.logger.info(f'Assume option type is {self.opt_type} based on delta')
+        self.logger.debug(f'Assume option type is {self.opt_type} based on delta')
         soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-        self.logger.info(f"Current file limits - Soft: {soft}, Hard: {hard}")
-        resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
-        new_soft, new_hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-        self.logger.info(f"New file limits - Soft: {new_soft}, Hard: {new_hard}")
+        self.logger.debug(f"Current file limits - Soft: {soft}, Hard: {hard}")
+        if soft < hard:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+            new_soft, new_hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+            self.logger.debug(f"New file limits - Soft: {new_soft}, Hard: {new_hard}")
 
     def do_theta_curves(self, symbol, strike, df_sym):
         optana = self.optana
@@ -817,10 +824,76 @@ class ParallelOptionCalculator:
                 proc.close()
                 killed += 1
                 self.proc_dict.pop(key)
-        self.logger.info(f'killed {killed} zombies, left {n_alive} children alive.')
+        self.logger.debug(f'killed {killed} zombies, left {n_alive} children alive.')
 
     def list_open_files(self):
         import psutil
         proc = psutil.Process(os.getpid())
         open_files = proc.open_files()
         return [file.path for file in open_files]
+
+def get_rotating_logger(log_name, log_file):
+    import logging
+    from logging.handlers import RotatingFileHandler
+    logger = logging.getLogger(log_name)
+    handler = RotatingFileHandler(log_file, maxBytes=299792458, backupCount=3)
+    handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s: %(message)s'))
+    logger.addHandler(handler)
+    logger.level = logging.INFO
+    return logger
+
+def main(sys_argv):
+    if len(sys_argv) == 1:
+        sys.stderr.write(f'Usage: python {sys_argv[0]} symlist_file\n')
+        return
+    log_name = os.path.basename(sys_argv[0]).replace('.py', '')
+    log_file = os.path.join(os.path.expanduser('~/logs/'),  log_name + '.log')
+    print('Log file:', log_file)
+    logger = get_rotating_logger(log_name, log_file)
+    symlist_file = sys.argv[1]
+    app_dir = os.path.dirname(symlist_file)
+    quotes_dir = os.path.join(app_dir, 'quotes')
+    chain_dir = os.path.join(app_dir, 'chain')
+    print(symlist_file, chain_dir, quotes_dir)
+    self = OptionAnalyzer(quotes_dir, chain_dir, logger=logger)
+    with open(symlist_file) as fo:
+        symlist = [_.rstrip() for _ in fo]
+    while True:
+        this_symlist = self.get_updated_symbol_list(age_ub=60)
+        sym_diff = set(symlist) - set(this_symlist)
+        if len(sym_diff) > 0:
+            print(f'Option data missing for {sym_diff}')
+            time.sleep(1)
+            continue
+        df_quotes, df_shortint, df_vola = self.get_quote_df(symlist)
+        df_raw = self.build_option_df(symlist)
+        df_ts = self.get_data_timestamps(df_raw)
+        load_dt_diff = (df_ts.load_dt.max() - df_ts.load_dt.min()).total_seconds()
+        if load_dt_diff > 60:
+            print(f'Option data load_dt difference {load_dt_diff} is over 60 seconds.')
+            time.sleep(1)
+            continue
+        quote_dt_load_dt_diff = np.abs((df_ts.load_dt - df_ts.quote_dt).max().total_seconds())
+        if quote_dt_load_dt_diff > 30:
+            print(f'Option data and quote data are out of sync: {quote_dt_load_dt_diff}')
+            time.sleep(1)
+            continue
+        else:
+            break
+    data_ts = df_ts.load_dt.max()
+    print('df_raw.shape:', df_raw.shape, 'data_ts:', data_ts.strftime('%F %T'))
+    df_earning = self.count_days_from_earning_reports(df_quotes)
+    print('Days to E:', self.d2e)
+    for opt_type in ['put', 'call']:
+        df_type = self.select_options_by_type(df_raw, opt_type)
+        poc = ParallelOptionCalculator(df_type, self, f'/run/user/{os.getuid()}/time_decay~{opt_type}')
+        csv_files = poc.do_all_theta_curves(symlist)
+        df_type = poc.assemble_time_decay_df(csv_files)
+        csv_file = os.path.join(app_dir, data_ts.strftime(f'data/{opt_type}~%F_%H:%M.csv'))
+        if os.path.exists(csv_file) and os.path.getsize(csv_file) > 0:
+            print('Overriding existing file', csv_file)
+        print(df_type.shape, csv_file)
+        df_type.to_csv(csv_file, index=None)
+    
+if __name__ == '__main__':
+    main(sys.argv)
