@@ -25,8 +25,8 @@ class FidelityPositions:
 
     def get_option_positions(self):
         df = self.df_pos
-        _df = df[df.Symbol.str.contains(r'-\W*[A-Z]+\d+[CP]\d+')]
-        df_sp = _df.Symbol.str.extract( r'-\W*([A-Z]+)(\d+)([CP])(\d+)')
+        _df = df[df.Symbol.str.contains(r'-\W*[A-Z]+\d+[CP][\d\.]+')]
+        df_sp = _df.Symbol.str.extract( r'-\W*([A-Z]+)(\d+)([CP])([\d\.]+)')
         df_sp.columns = ['symbol', 'expDt', 'type', 'strike']
         df_sp['expDt'] = pd.to_datetime(df_sp['expDt'], format='%y%m%d')
         df_sp['strike'] = pd.to_numeric(df_sp['strike'], errors='coerce').astype(float)
