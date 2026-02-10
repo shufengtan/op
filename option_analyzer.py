@@ -247,28 +247,25 @@ class OptionAnalyzer:
         df['dte_cluster'] = pd.cut(df['dte'], bins=bins, labels=labels, right=False)
         return df
 
-    def calc_mean_median(self, df, col, bid_lb=0.5, oi_lb=100):
-        _g = df[(df.Bid >= bid_lb) & (df.OpenInterest >= oi_lb)].groupby('symbol')
-        _df = pd.DataFrame({f'mean_{col}': _g[col].mean(), f'median_{col}': _g[col].median()})
-        _df = _df.sort_values(by=f'mean_{col}')
-        return _df
-
-    def plot_option_stats(self, dfcp, metrics = ['pctSpread', 'OpenInterest', 'ImpVola']):
-        if 'type' in dfcp.columns:
-            opt_types = sorted(dfcp.type.unique())
-        elif dfcp.Delta.min() < 0:
-            opt_types = ['P']
-        else:
-            opt_types = ['C']
-        titles = [f'{col} mean and median - {_t} options' for col in metrics for _t in opt_types]
-        fig = make_subplots(rows=len(metrics), cols=len(opt_types), subplot_titles=titles, shared_yaxes=True)
-        fig.update_layout(height=len(metrics)*300, showlegend=False)
-        if len(opt_types) == 1:
-            fig.update_layout(width=dfcp.symbol.nunique()* 50)
+    def plot_option_stats(self, dfcp, metrics = ['pctSpread', 'ImpVola']):
+        cols = 'type' if 'type' in dfcp.columns else None
+        aggfuncs = ['mean', 'median']
+        _df = dfcp[(dfcp.Bid > 0) & (dfcp.OpenInterest > 0)]
+        df_pivot = pd.pivot_table(_df, index='symbol', columns=cols, values=metrics, aggfunc=aggfuncs)
+        #return df_pivot
+        titles = [f'{agg} {col}' for col in metrics for agg in aggfuncs]
+        fig = make_subplots(rows=len(metrics), cols=2, subplot_titles=titles, shared_yaxes=True)
+        fig.update_layout(height=len(metrics)*300)#, showlegend=False)
         for _i, metric in enumerate(metrics):
-            for _j, _t in enumerate(opt_types):
-                _df = dfcp[dfcp.type == _t] if 'type' in dfcp.columns else dfcp
-                chart = px.bar(self.calc_mean_median(_df, metric))
+            for _j, agg in enumerate(aggfuncs):
+                _df = df_pivot[agg]
+                if cols is not None:
+                    _df = _df.stack(level=1, future_stack=True)
+                    _df = _df.loc[:, [metric]].reset_index().sort_values(by=['type', metric], ascending=False)
+                    chart = px.bar(_df, x='symbol', y=metric, color=cols)
+                else:
+                    _df = _df.loc[:, [metric]].reset_index().sort_values(by=metric, ascending=False)
+                    chart = px.bar(_df, x='symbol', y=metric)
                 for trace in chart.data:
                     fig.add_trace(trace, row=_i+1, col=_j+1)
         fig.show()
@@ -462,10 +459,10 @@ class OptionAnalyzer:
             add_cols += ['overpaid', 'leverage']
         df_res = df_res.join(df.set_index(_index).loc[:, add_cols]).reset_index()
         if opt_type == 'P':
-            df_res['dteProfit'] = df_res.mid/df_res.strike/df_res.dte*100*365
-            df_res['hdteProfit'] = df_res.mid/2/df_res.strike/np.ceil(df_res.dth)*100*365
+            df_res['dteProfit'] = df_res.mid/df_res.strike/df_res.dte*100*365 - df_res.pctSpread/2
+            df_res['hdteProfit'] = df_res.mid/2/df_res.strike/np.ceil(df_res.dth)*100*365 - df_res.pctSpread/2
         df_res['E'] = df_res.symbol.apply(self.d2e.get)
-        return df_res
+        return df_res.drop(columns=['dth', 'dtz', 'Theta'])
 
     def shortcut_time_decay(self, df_thc, symbol, strike, dte, premium):
         if np.isnan(df_thc.iloc[0]['avg_theta']):
@@ -536,7 +533,7 @@ class OptionAnalyzer:
         df[tmp_diff_col] = (df[col] - target_value).abs()
         idx = df.groupby(groupers)[tmp_diff_col].idxmin() if len(groupers) > 0 else df.loc[:, [tmp_diff_col]].idxmin()
         return df.loc[idx].drop(columns=[tmp_diff_col])
-    
+
     def select_pds_deltas(self, dfcp, dte_lb, dte_ub):
         _df = dfcp[(dfcp.type=='P') & (dfcp.dte >= dte_lb) & (dfcp.dte <= dte_ub)]
         dfstrike_atm = self.get_rows_with_closest_value_in_column(_df.loc[:, ['symbol', 'dte', 'strike', 'lastPrice']], 'strike', _df.lastPrice).set_index(['symbol', 'dte'])
