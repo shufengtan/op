@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass, field
+import plotly.express as px
+from plotly.subplots import make_subplots
 
 @dataclass(slots=True)
 class FidelityPositions:
@@ -38,6 +40,22 @@ class FidelityPositions:
         _dfp = df_pos[df_pos.type == 'P']
         p_risk = (-100*_dfp.Quantity * _dfp['strike']).sum().item()
         return {'C_risk': c_risk, 'P_risk': p_risk}
+
+    def option_position_pies(self, df_pos):
+        _df = pd.DataFrame({
+            'symbol': df_pos.symbol,
+            'type': df_pos.type,
+            'amount': df_pos.apply(lambda r: 100*r.Quantity*r['Average Cost Basis'] if r.type=='C' else -100*r.Quantity*r.strike, axis=1)
+        })
+        _df = _df.groupby(['type', 'symbol']).sum().reset_index()
+        opt_types = list(_df.type.unique())
+        fig = make_subplots(rows=1, cols=2, subplot_titles=opt_types, specs=[[{'type': 'domain'}, {'type': 'domain'}]])
+        for _j, opt_type in enumerate(opt_types):
+            chart = px.pie(_df[_df.type==opt_type], names='symbol', values='amount')
+            for trace in chart.data:
+                fig.add_trace(trace, row=1, col=_j+1)
+        fig.show()
+        return _df
 
 if __name__ == '__main__':
     import sys
