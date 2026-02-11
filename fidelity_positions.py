@@ -34,13 +34,6 @@ class FidelityPositions:
         df_sp['strike'] = pd.to_numeric(df_sp['strike'], errors='coerce').astype(float)
         return pd.concat([df_sp, _df.loc[:, ['Quantity', 'Last Price', 'Average Cost Basis', 'Cost Basis Total']]], axis=1)
 
-    def capital_risks(self, df_pos):
-        _dfc = df_pos[df_pos.type == 'C']
-        c_risk = (_dfc.Quantity * 100 * _dfc['Average Cost Basis']).sum().item()
-        _dfp = df_pos[df_pos.type == 'P']
-        p_risk = (-100*_dfp.Quantity * _dfp['strike']).sum().item()
-        return {'C_risk': c_risk, 'P_risk': p_risk}
-
     def option_position_pies(self, df_pos):
         _df = pd.DataFrame({
             'symbol': df_pos.symbol,
@@ -48,8 +41,10 @@ class FidelityPositions:
             'amount': df_pos.apply(lambda r: 100*r.Quantity*r['Average Cost Basis'] if r.type=='C' else -100*r.Quantity*r.strike, axis=1)
         })
         _df = _df.groupby(['type', 'symbol']).sum().reset_index()
+        risk_dict = dict(_df.groupby('type').amount.sum())
         opt_types = list(_df.type.unique())
-        fig = make_subplots(rows=1, cols=2, subplot_titles=opt_types, specs=[[{'type': 'domain'}, {'type': 'domain'}]])
+        titles = [f'{_t} option total: {risk_dict[_t].item()}' for _t in opt_types]
+        fig = make_subplots(rows=1, cols=2, subplot_titles=titles, specs=[[{'type': 'domain'}, {'type': 'domain'}]])
         for _j, opt_type in enumerate(opt_types):
             chart = px.pie(_df[_df.type==opt_type], names='symbol', values='amount')
             for trace in chart.data:
