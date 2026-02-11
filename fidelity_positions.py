@@ -34,19 +34,23 @@ class FidelityPositions:
         df_sp['strike'] = pd.to_numeric(df_sp['strike'], errors='coerce').astype(float)
         return pd.concat([df_sp, _df.loc[:, ['Quantity', 'Last Price', 'Average Cost Basis', 'Cost Basis Total']]], axis=1)
 
+    def sum_sell_put_premium(self, df_pos):
+        _df = df_pos[(df_pos.type=='P') & (df_pos.Quantity < 0)]
+        return -100 * (_df['Quantity'] * _df['Average Cost Basis']).sum()
+
     def option_position_pies(self, df_pos):
         _df = pd.DataFrame({
             'symbol': df_pos.symbol,
-            'type': df_pos.type,
-            'amount': df_pos.apply(lambda r: 100*r.Quantity*r['Average Cost Basis'] if r.type=='C' else -100*r.Quantity*r.strike, axis=1)
+            'strategy': df_pos.apply(lambda r: ('Sell ' if r.Quantity < 0 else 'Buy ' if r.Quantity > 0 else '? ') + r.type, axis=1),
+            'amount': df_pos.apply(lambda r: 100*r.Quantity*r['Average Cost Basis'] if r.Quantity > 0 else -100*r.Quantity*r.strike, axis=1)
         })
-        _df = _df.groupby(['type', 'symbol']).sum().reset_index()
-        risk_dict = dict(_df.groupby('type').amount.sum())
-        opt_types = list(_df.type.unique())
-        titles = [f'{_t} option total: {risk_dict[_t].item()}' for _t in opt_types]
-        fig = make_subplots(rows=1, cols=2, subplot_titles=titles, specs=[[{'type': 'domain'}, {'type': 'domain'}]])
-        for _j, opt_type in enumerate(opt_types):
-            chart = px.pie(_df[_df.type==opt_type], names='symbol', values='amount')
+        _df = _df.groupby(['strategy', 'symbol']).sum().reset_index()
+        risk_dict = dict(_df.groupby('strategy').amount.sum())
+        strat_list = list(_df.strategy.unique())
+        titles = [f'{s} option total: {risk_dict[s].item()}' for s in strat_list]
+        fig = make_subplots(rows=1, cols=len(titles), subplot_titles=titles, specs=[[{'type': 'domain'}, {'type': 'domain'}]])
+        for _j, strategy in enumerate(strat_list):
+            chart = px.pie(_df[_df.strategy==strategy], names='symbol', values='amount')
             for trace in chart.data:
                 fig.add_trace(trace, row=1, col=_j+1)
         fig.show()
