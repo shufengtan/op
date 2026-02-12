@@ -3,6 +3,8 @@ import numpy as np
 from dataclasses import dataclass, field
 import plotly.express as px
 from plotly.subplots import make_subplots
+from glob import glob
+import os
 
 @dataclass(slots=True)
 class FidelityPositions:
@@ -66,6 +68,21 @@ class FidelityPositions:
                 fig.add_trace(trace, row=1, col=_j+1)
         fig.show()
         return _df
+
+    def load_option_history_data(self, df_pos, data_dir, num_ts=30):
+        opt_cols = ['type', 'symbol', 'strike', 'expDt']
+        _df_pos = df_pos.loc[:, opt_cols].drop_duplicates()
+        lodf = []
+        csv_files = sorted(glob(f'{data_dir}/call~????-??-??_??:??.csv'))[-num_ts:]
+        csv_files += sorted(glob(f'{data_dir}/put~????-??-??_??:??.csv'))[-num_ts:]
+        for csv_file in csv_files:
+            opt_type = os.path.basename(csv_file)[0].upper()
+            ts = csv_file.split('~')[-1].split('.')[0].replace('_', ' ')
+            _df = pd.read_csv(csv_file)
+            _df = _df.merge(_df_pos[_df_pos.type==opt_type], on=opt_cols[1:], how='right')
+            _df['ts'] = pd.to_datetime(ts)
+            lodf.append(_df)
+        return pd.concat(lodf)
 
 if __name__ == '__main__':
     import sys
