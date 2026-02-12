@@ -344,7 +344,7 @@ def wait_till_market_open(logger):
         #print(now.strftime('%m/%d/%Y'), all_exp_dates)
         if now.strftime('%m/%d/%Y') in all_exp_dates:
             hours = now - now.normalize()
-            if hours > timedelta(hours=16):
+            if hours > timedelta(hours=16.25):
                 time_to_go = (now.normalize() + timedelta(hours=24+9.5) - now).total_seconds()
                 logger.info(f'Sleep for {int(time_to_go/60)} minutes till the next market opening.')
                 time.sleep(time_to_go)
