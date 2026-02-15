@@ -32,11 +32,11 @@ class OptionAnalyzer:
         age_dict = dict([(os.path.basename(f), time.time() - os.path.getmtime(f)) for f in glob(os.path.join(self.chain_dir, '*'))])
         symlist = sorted([k for k, v in age_dict.items() if v <= age_ub], key=age_dict.get)
         if len(symlist) > 0:
-            self.logger.info(f'{len(symlist)} symbols, age: {age_dict[symlist[0]]:.01f}" {age_dict[symlist[-1]]:.01f}", {" ".join(symlist)}')
+            self.logger.info(f'get_updated_symbol_list: {len(symlist)} symbols, age: {age_dict[symlist[0]]:.01f}" {age_dict[symlist[-1]]:.01f}", {" ".join(symlist)}')
         else:
             age_limit = min(age_dict.values()) + age_ub
             symlist = [os.path.basename(f) for f, age in age_dict.items() if age <= age_limit]
-            self.logger.warning(f'No update in the past {age_ub} seconds.')
+            self.logger.warning(f'get_updated_symbol_list: no update in the past {age_ub} seconds.')
         return symlist
         
     def get_quote_df(self, symlist):
@@ -840,6 +840,7 @@ def get_rotating_logger(log_name, log_file):
     return logger
 
 def main(sys_argv):
+    from market_data_timer import wait_till_market_open, wait_to_open_symbol_file
     if len(sys_argv) == 1:
         sys.stderr.write(f'Usage: python {sys_argv[0]} symlist_file\n')
         return
@@ -853,6 +854,8 @@ def main(sys_argv):
     chain_dir = os.path.join(app_dir, 'chain')
     print(symlist_file, chain_dir, quotes_dir)
     self = OptionAnalyzer(quotes_dir, chain_dir, logger=logger)
+    wait_till_market_open(logger)
+    wait_to_open_symbol_file(symlist_file)
     with open(symlist_file) as fo:
         symlist = [_.rstrip() for _ in fo]
     while True:
