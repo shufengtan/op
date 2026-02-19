@@ -840,6 +840,8 @@ def get_rotating_logger(log_name, log_file):
     return logger
 
 def main(sys_argv):
+    import socket
+    hostname = socket.gethostname()
     from market_data_timer import wait_till_market_open, wait_to_open_symbol_file
     if len(sys_argv) == 1:
         sys.stderr.write(f'Usage: python {sys_argv[0]} symlist_file\n')
@@ -871,12 +873,12 @@ def main(sys_argv):
         load_dt_diff = (df_ts.load_dt.max() - df_ts.load_dt.min()).total_seconds()
         if load_dt_diff > 60:
             print(f'Option data load_dt difference {load_dt_diff} is over 60 seconds.')
-            time.sleep(1)
+            time.sleep(5)
             continue
         quote_dt_load_dt_diff = np.abs((df_ts.load_dt - df_ts.quote_dt).max().total_seconds())
         if quote_dt_load_dt_diff > 30:
             print(f'Option data and quote data are out of sync: {quote_dt_load_dt_diff}')
-            time.sleep(1)
+            time.sleep(5)
             continue
         else:
             break
@@ -889,7 +891,7 @@ def main(sys_argv):
         poc = ParallelOptionCalculator(df_type, self, f'/run/user/{os.getuid()}/time_decay~{opt_type}')
         csv_files = poc.do_all_theta_curves(symlist)
         df_type = poc.assemble_time_decay_df(csv_files)
-        csv_file = os.path.join(app_dir, data_ts.strftime(f'data/{opt_type}~%F_%H:%M.csv'))
+        csv_file = os.path.join(app_dir, data_ts.strftime(f'data/{opt_type}~{hostname}~%F_%T.csv'))
         if os.path.exists(csv_file) and os.path.getsize(csv_file) > 0:
             print('Overriding existing file', csv_file)
         print(df_type.shape, csv_file)

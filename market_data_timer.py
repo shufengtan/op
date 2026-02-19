@@ -8,7 +8,7 @@ def wait_till_market_open(logger):
     while True:
         all_exp_dates = get_option_expiration_dates(3)[0]
         now = pd.Timestamp.today()
-        logger.info(f'wait_till_market_open: next option expiration dates are {all_exp_dates}')
+        logger.debug(f'wait_till_market_open: next option expiration dates are {all_exp_dates}')
         if now.strftime('%m/%d/%Y') in all_exp_dates:
             hours = now - now.normalize()
             if hours > timedelta(hours=16.25):

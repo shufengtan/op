@@ -234,9 +234,9 @@ class OptionChainDownloader(object):
 def main(batch_size=5):
     '''set batch_size to 0 for sequential download'''
     from market_data_timer import wait_till_market_open, wait_to_open_symbol_file
-    chain_dir = 'chain'
-    quotes_dir = 'quotes'
-    cookie_file = 'cookie.txt'
+    chain_dir = os.path.expanduser('~/lab/chain')
+    quotes_dir = os.path.expanduser('~/lab/quotes')
+    cookie_file = os.path.expanduser('~/lab/cookie.txt')
     log_file = os.path.join(os.path.expanduser('~/logs'), os.path.basename(sys.argv[0]).replace('.py', '') + '.log')
 
     print('Logger:', log_file)
@@ -246,11 +246,12 @@ def main(batch_size=5):
     ocd = OptionChainDownloader(chain_dir, quotes_dir, cookie_file, logger, strikes='ALL')
     file_ripe_age = 10
     while True:
-        symlist = wait_to_open_symbol_file(symbol_file)
-        wait_till_market_open(logger)
         if os.path.exists(ocd.abort_signal_file) and not ocd.read_cookie() or ocd.get_cookie_age() >= 3510:
+            print('.', end='')
             time.sleep(5)
             continue
+        symlist = wait_to_open_symbol_file(symbol_file)
+        wait_till_market_open(logger)
         logger.info(f'BEGIN downloading {len(symlist)} symbols')
         dl_count = ocd.download_option_chain(symlist, batch_size=batch_size, rps=5)
         if dl_count == 0:
