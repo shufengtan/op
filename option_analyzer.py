@@ -454,7 +454,7 @@ class OptionAnalyzer:
         df_res['dtzr'] = df_res.dtz/df_res.dte
         _index = ['symbol', 'dte', 'strike']
         df_res = df_res.set_index(_index)
-        add_cols = ['mid', 'lastPrice', 'pctSpread', 'Delta', 'Theta', 'moneyness', 'expDt', 'OpenInterest']
+        add_cols = ['mid', 'lastPrice', 'pctSpread', 'Delta', 'Theta', 'moneyness', 'expDt', 'ImpVola', 'OpenInterest']
         if opt_type == 'C':
             add_cols += ['overpaid', 'leverage']
         df_res = df_res.join(df.set_index(_index).loc[:, add_cols]).reset_index()
