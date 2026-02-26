@@ -462,7 +462,7 @@ class OptionAnalyzer:
             df_res['dteProfit'] = df_res.mid/df_res.strike/df_res.dte*100*365 - df_res.pctSpread/2
             df_res['hdteProfit'] = df_res.mid/2/df_res.strike/np.ceil(df_res.dth)*100*365 - df_res.pctSpread/2
         df_res['E'] = df_res.symbol.apply(self.d2e.get)
-        return df_res.drop(columns=['dth', 'dtz', 'Theta'])
+        return df_res.drop(columns=['dth', 'dtz'])
 
     def shortcut_time_decay(self, df_thc, symbol, strike, dte, premium):
         if np.isnan(df_thc.iloc[0]['avg_theta']):
