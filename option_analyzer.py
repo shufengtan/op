@@ -883,7 +883,7 @@ def main(sys_argv):
             continue
         quote_dt_load_dt_diff = np.abs((df_ts.load_dt - df_ts.quote_dt).max().total_seconds())
         if quote_dt_load_dt_diff > 30:
-            hours = (pd.Timestamp.now() - pd.Timestamp.now().normalize())/3600
+            hours = (pd.Timestamp.now() - pd.Timestamp.now().normalize()).seconds/3600
             if hours >= 16:
                 if hours <= 16.25:
                     break # Ok to proceed
