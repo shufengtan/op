@@ -862,9 +862,13 @@ def main(sys_argv):
         symlist = [_.rstrip() for _ in fo]
     while True:
         this_symlist = self.get_updated_symbol_list(age_ub=60)
-        sym_diff = set(symlist) - set(this_symlist)
+        sym_added = set(this_symlist) - set(symlist)
+        if len(sym_added) > 0:
+            print(f'Detected option data for new symbols: {sym_added}')
+            return
+        sym_missing = set(symlist) - set(this_symlist)
         if len(sym_diff) > 0:
-            print(f'Option data missing for {sym_diff}')
+            print(f'Option data missing for {sym_diff}. Sleep 1 second.')
             time.sleep(1)
             continue
         df_quotes, df_shortint, df_vola = self.get_quote_df(symlist)
@@ -872,11 +876,17 @@ def main(sys_argv):
         df_ts = self.get_data_timestamps(df_raw)
         load_dt_diff = (df_ts.load_dt.max() - df_ts.load_dt.min()).total_seconds()
         if load_dt_diff > 60:
-            print(f'Option data load_dt difference {load_dt_diff} is over 60 seconds.')
+            print(f'Option data load_dt difference {load_dt_diff} is over 60 seconds. Sleep 5 seconds.')
             time.sleep(5)
             continue
         quote_dt_load_dt_diff = np.abs((df_ts.load_dt - df_ts.quote_dt).max().total_seconds())
         if quote_dt_load_dt_diff > 30:
+            hours = (pd.Timestamp.now() - pd.Timestamp.now().normalize())/3600
+            if hours >= 16:
+                if hours <= 16.25:
+                    break # Ok to proceed
+                else:
+                    return # No new data for the day
             print(f'Option data and quote data are out of sync: {quote_dt_load_dt_diff}')
             time.sleep(5)
             continue
