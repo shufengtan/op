@@ -77,6 +77,15 @@ def compute_ma(df_yf):
         d_o_ma[f'MA{days}'] = df_close.mean()
     return pd.DataFrame(d_o_ma)
 
+def compute_emas(df_price, spans=[21, 50]):
+    '''df_price: columns are symbols, indexes are dates'''
+    l_o_ema = []
+    for span in spans:
+        _df_ema = df_price.ewm(span=span, adjust=False).mean()
+        _df_ema.columns = pd.MultiIndex.from_tuples([(c, f'ema_{span}') for c in _df_ema.columns])
+        l_o_ema.append(_df_ema)
+    return pd.concat(l_o_ema, axis=1)
+
 def calculate_bollinger_bands(prices, window=20, num_std=2):
     """
     Calculate Bollinger Bands.

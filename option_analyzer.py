@@ -862,13 +862,15 @@ def main(sys_argv):
         symlist = [_.rstrip() for _ in fo]
     while True:
         this_symlist = self.get_updated_symbol_list(age_ub=60)
+        #print(sorted(this_symlist))
+        #print(sorted(symlist))
         sym_added = set(this_symlist) - set(symlist)
-        if len(sym_added) > 0:
-            print(f'Detected option data for new symbols: {sym_added}')
-            return
+        #if len(sym_added) > 0:
+        #    print(f'Detected option data for new symbols: {sym_added}')
+        #    return
         sym_missing = set(symlist) - set(this_symlist)
-        if len(sym_diff) > 0:
-            print(f'Option data missing for {sym_diff}. Sleep 1 second.')
+        if len(sym_missing) > 0:
+            print(f'Option data missing for {sym_missing}. Sleep 1 second.')
             time.sleep(1)
             continue
         df_quotes, df_shortint, df_vola = self.get_quote_df(symlist)
