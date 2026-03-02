@@ -60,7 +60,7 @@ class OptionAnalyzer:
                     if resp_dict.get('status', {}).get('errorCode') != 0:
                         log.warning(f"get_quote_df: skipped file {quote_file} due to error status {resp_dict.get('status')}")
                         continue
-                    symbol = resp_dict['requestSymbol']
+                    symbol = resp_dict['requestSymbol'].replace('/', '-')
                     q_data = resp_dict.get('quoteData')
                     quote_dt = f"{q_data.get('lastDate', '')} {q_data.get('lastTime', '')}"
                     self.last_price[symbol] = (float(q_data.get('lastPrice')),  quote_dt)
