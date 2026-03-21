@@ -234,6 +234,7 @@ class OptionChainDownloader(object):
 def main(batch_size=5):
     '''set batch_size to 0 for sequential download'''
     from market_data_timer import wait_till_market_open, wait_to_open_symbol_file
+    from ntfy import Ntfy
     chain_dir = os.path.expanduser('~/lab/chain')
     quotes_dir = os.path.expanduser('~/lab/quotes')
     cookie_file = os.path.expanduser('~/lab/cookie.txt')
@@ -243,6 +244,8 @@ def main(batch_size=5):
     sys.stdout.flush()
     logger = get_rotating_logger("", log_file)
     symbol_file = sys.argv[1]
+    ntfy_topic = sys.argv[2]
+    ntfyer = Ntfy(ntfy_topic)
     ocd = OptionChainDownloader(chain_dir, quotes_dir, cookie_file, logger, strikes='ALL')
     file_ripe_age = 10
     while True:
@@ -268,7 +271,11 @@ def main(batch_size=5):
                 time.sleep(1)
         if batch_size > 0:
             ocd.kill_zombies()
-        logger.info(f'END downloading. Cookie is {int(ocd.get_cookie_age())} seconds old.')
+        cookie_age = int(ocd.get_cookie_age())
+        if cookie_age > 3300:
+            if time.time() - ntfyer.last_mesg_ts >= 300:
+                ntfyer.send_alert(f"{cookie_age} seconds")
+        logger.info(f'END downloading. Cookie is {cookie_age} seconds old.')
         time.sleep(5)
 
 if __name__ == '__main__':
