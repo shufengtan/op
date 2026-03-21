@@ -1,3 +1,5 @@
+#!/home/ana/conda/bin/python3
+
 import os
 import sqlite3
 import secretstorage
@@ -12,7 +14,7 @@ def decrypt_v10(blob, password):
     # Constants for Chromium Linux v10
     salt = b'saltysalt'
     bsize = 16
-    key_length = bsize
+    key_length = 16
     iv = b' ' * bsize
     # value_charset = '#$%&()+-./0123456789=ABCDEFGHIJKLMNOPQRSTUVWXYZ^_abcdefghijklmnopqrstuvwxyz|~'
 
@@ -46,16 +48,17 @@ def decrypt_v10(blob, password):
         
         raw_data = decrypted[:-padding_len]
 
+        # 5. Get rid of the leading garbage blocks
         for i in range(0, len(raw_data), bsize):
-            if len([1 for x in raw_data[i:i+bsize] if x < 35 or x > 126]) > 0:
+            if any(x < 35 or x > 126 for x in raw_data[i:i+bsize]):
                 continue
             return raw_data[i:].decode('utf-8', errors='ignore')
-
         return ''
+
     except Exception:
         return None
 
-def extract_cookies(domain):
+def extract_fid_cookies():
     # Standard Ubuntu Snap Path
     db_path = os.path.expanduser("~/snap/chromium/common/chromium/Default/Cookies")
     if not os.path.exists(db_path):
@@ -68,28 +71,45 @@ def extract_cookies(domain):
     for item in collection.get_all_items():
         if "chromium" in item.get_label().lower():
             password = item.get_secret()
+            print(f'Got password {password} from secretstorage.')
             break
 
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     cursor = conn.cursor()
+    domain = '.fidelity.com'
     cursor.execute("SELECT name, encrypted_value, value, host_key FROM cookies WHERE host_key LIKE ?", (f"%{domain}%",))
-    
+
     cookie_nv_pairs = []
     for name, enc, plain, h_key in cursor.fetchall():
-        if h_key not in ['.fidelity.com', 'digital.fidelity.com', '.digital.fidelity.com']:
-            print(f'# Ignore name {name} host_key {h_key}')
+        if h_key not in [domain, 'digital' + domain, '.digital' + domain]:
+            print(f'Ignore host {h_key}: {name}')
             continue
         if name in ['AMURCC', 'SESSION_CTX']:
             continue
         blob = enc if (enc and enc.startswith(b'v10')) else plain
         val = decrypt_v10(blob, password)
-        print(f"{h_key} {name}={val}")
+        print(f"host {h_key}: {name}")
         cookie_nv_pairs.append(f'{name}={val}')
     conn.close()
-    with open('cookie.list', 'w') as wfo:
-        wfo.write('\n'.join(sorted(cookie_nv_pairs)) + '\n')
-    with open('cookie.txt', 'w') as wfo:
-        wfo.write('; '.join(cookie_nv_pairs))
+    if len(cookie_nv_pairs) > 0:
+        cookie_list_file = os.path.expanduser('~/data/cookie.list')
+        with open(cookie_list_file, 'w') as wfo:
+            wfo.write('\n'.join(sorted(cookie_nv_pairs)) + '\n')
+        cookie_txt_file = os.path.expanduser('~/data/cookie.txt')
+        with open(cookie_txt_file, 'w') as wfo:
+            wfo.write('; '.join(cookie_nv_pairs))
+        return cookie_txt_file
 
 if __name__ == "__main__":
-    extract_cookies(".fidelity.com")
+    import time
+    import sys
+    dest_dir = sys.argv[1]
+    cookie_txt_file = extract_fid_cookies()
+    if not (cookie_txt_file and os.path.exists(cookie_txt_file) and os.path.getsize(cookie_txt_file) > 1000):
+        print('Failedd to extract cookies')
+        sys.exit(1)
+    if time.time() - os.path.getmtime(cookie_txt_file) <= 5:
+        os.system(f'/usr/bin/scp {cookie_txt_file} {dest_dir}')
+    else:
+        print(f'{cookie_txt_file} is stale')
+        sys.exit(1)
