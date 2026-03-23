@@ -2,95 +2,68 @@
 
 import os
 import sqlite3
-import secretstorage
 from Cryptodome.Cipher import AES
 from Cryptodome.Protocol.KDF import PBKDF2
 from Cryptodome.Hash import SHA1
 
-def decrypt_v10(blob, password):
-    if not blob or len(blob) < 3 or not blob.startswith(b'v10'):
-        return None
+def check_assumptins(cursor):
+    cursor.execute("SELECT value FROM cookies")
+    assert all(row[0] == '' for row in cursor.fetchall())
+    cursor.execute("SELECT encrypted_value FROM cookies")
+    assert all(row[0][:3] == b'v10' for row in cursor.fetchall())
 
-    # Constants for Chromium Linux v10
-    salt = b'saltysalt'
-    bsize = 16
-    key_length = 16
-    iv = b' ' * bsize
-    # value_charset = '#$%&()+-./0123456789=ABCDEFGHIJKLMNOPQRSTUVWXYZ^_abcdefghijklmnopqrstuvwxyz|~'
-
-    try:
-        # 1. Derive Key
-        derived_key = PBKDF2(password, salt, key_length, count=1, hmac_hash_module=SHA1)
-        
-        # 2. Cipher Setup
-        cipher = AES.new(derived_key, AES.MODE_CBC, IV=iv)
-        
-        # 3. Decrypt the payload (stripping the 'v10' 3-byte header)
-        decrypted = cipher.decrypt(blob[3:])
-
-        # --- CRITICAL PADDING & STRUCTURE LOGIC ---
-        # Chromium v10 often stores a 'Length-Prefix' or a 'Signature' in the first block.
-        # If the first block is garbled, it's often because the IV in the DB 
-        # is actually the first 16 bytes of the payload.
-        
-        # Let's try the 'First Block is IV' strategy if standard IV fails
-        if not all(32 <= c <= 126 for c in decrypted[16:20]):
-            # Use the first 16 bytes of the payload as the IV for the rest
-            new_iv = blob[3:3+bsize]
-            new_payload = blob[3+bsize:]
-            cipher = AES.new(derived_key, AES.MODE_CBC, IV=new_iv)
-            decrypted = cipher.decrypt(new_payload)
-
-        # 4. PKCS#7 Padding Check
-        padding_len = decrypted[-1]
-        if padding_len < 1 or padding_len > bsize:
-            return None
-        
-        raw_data = decrypted[:-padding_len]
-
-        # 5. Get rid of the leading garbage blocks
-        for i in range(0, len(raw_data), bsize):
-            if any(x < 35 or x > 126 for x in raw_data[i:i+bsize]):
-                continue
-            return raw_data[i:].decode('utf-8', errors='ignore')
-        return ''
-
-    except Exception:
-        return None
-
-def extract_fid_cookies():
-    # Standard Ubuntu Snap Path
-    db_path = os.path.expanduser("~/snap/chromium/common/chromium/Default/Cookies")
-    if not os.path.exists(db_path):
-        db_path = os.path.expanduser("~/snap/chromium/common/chromium/Default/Network/Cookies")
-
-    # Get Key
-    bus = secretstorage.dbus_init()
-    collection = secretstorage.get_default_collection(bus)
-    password = b'peanuts' # Default Snap fallback
-    for item in collection.get_all_items():
-        if "chromium" in item.get_label().lower():
-            password = item.get_secret()
-            print(f'Got password {password} from secretstorage.')
-            break
-
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    cursor = conn.cursor()
+def fetch_fid_cookie_rows(cursor):
     domain = '.fidelity.com'
-    cursor.execute("SELECT name, encrypted_value, value, host_key FROM cookies WHERE host_key LIKE ?", (f"%{domain}%",))
-
-    cookie_nv_pairs = []
-    for name, enc, plain, h_key in cursor.fetchall():
+    cursor.execute("SELECT name, encrypted_value, host_key FROM cookies WHERE host_key LIKE ?", (f"%{domain}%",))
+    rows = []
+    for name, enc, h_key in cursor.fetchall():
         if h_key not in [domain, 'digital' + domain, '.digital' + domain]:
-            print(f'Ignore host {h_key}: {name}')
+            print(f'# Ignore host {h_key}: {name}')
             continue
         if name in ['AMURCC', 'SESSION_CTX']:
             continue
-        blob = enc if (enc and enc.startswith(b'v10')) else plain
-        val = decrypt_v10(blob, password)
-        print(f"host {h_key}: {name}")
-        cookie_nv_pairs.append(f'{name}={val}')
-    conn.close()
+        rows.append((name, enc[3:], h_key))
+    return rows
+
+def validate_fid_cookie_rows(rows):
+    assert all(len(row[1])%16==0 for row in rows)
+
+def decrypt_v10(blob):
+    password=b'peanuts'
+    salt = b'saltysalt'
+    bsize = 16
+    key_length = 16
+    # value_charset = '#$%&()+-./0123456789=ABCDEFGHIJKLMNOPQRSTUVWXYZ^_abcdefghijklmnopqrstuvwxyz|~'
+
+    derived_key = PBKDF2(password, salt, key_length, count=1, hmac_hash_module=SHA1)
+    iv = blob[:bsize]
+    cipher = AES.new(derived_key, AES.MODE_CBC, IV=iv)
+    decrypted = cipher.decrypt(blob[bsize:])
+
+    # PKCS#7 Padding Check
+    padding_len = decrypted[-1]
+    if padding_len < 1 or padding_len > bsize:
+        print(f'bad padding_len {padding_len}')
+        return None
+
+    raw_data = decrypted[:-padding_len]
+
+    # Get rid of the leading garbage blocks
+    for i in range(0, len(raw_data), bsize):
+        if any(x < 35 or x > 126 for x in raw_data[i:i+bsize]):
+            continue
+        return raw_data[i:].decode('utf-8', errors='ignore')
+    return ''
+
+def get_fid_cookies(rows):
+    nv_pairs = []
+    for name, blob, h_key in rows:
+        val = decrypt_v10(blob)
+        print(h_key, name, len(val), 'bytes')
+        nv_pairs.append(f'{name}={val}')
+    return nv_pairs
+
+def save_cookie_files(cookie_nv_pairs):
     if len(cookie_nv_pairs) > 0:
         cookie_list_file = os.path.expanduser('~/data/cookie.list')
         with open(cookie_list_file, 'w') as wfo:
@@ -100,16 +73,26 @@ def extract_fid_cookies():
             wfo.write('; '.join(cookie_nv_pairs))
         return cookie_txt_file
 
-if __name__ == "__main__":
+def main(dest_dir):
     import time
-    import sys
-    dest_dir = sys.argv[1]
-    cookie_txt_file = extract_fid_cookies()
+    db_path = os.path.expanduser("~/snap/chromium/common/chromium/Default/Cookies")
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    cursor = conn.cursor()
+    check_assumptins(cursor)
+    rows = fetch_fid_cookie_rows(cursor)
+    validate_fid_cookie_rows(rows)
+    nv_pairs = get_fid_cookies(rows)
+    cookie_txt_file = save_cookie_files(nv_pairs)
     if not (cookie_txt_file and os.path.exists(cookie_txt_file) and os.path.getsize(cookie_txt_file) > 1000):
         print('Failedd to extract cookies')
-        sys.exit(1)
+        return
     if time.time() - os.path.getmtime(cookie_txt_file) <= 5:
         os.system(f'/usr/bin/scp {cookie_txt_file} {dest_dir}')
+        return True
     else:
         print(f'{cookie_txt_file} is stale')
-        sys.exit(1)
+        return
+
+if __name__ == '__main__':
+    import sys
+    main(sys.argv[1])
