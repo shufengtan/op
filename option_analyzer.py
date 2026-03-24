@@ -744,7 +744,11 @@ class ParallelOptionCalculator:
     def do_theta_curves(self, symbol, strike, df_sym):
         optana = self.optana
         df_thc = optana.get_theta_curve(df_sym, symbol, strike)
-        df_thc = optana.setup_trapezoidal_decay(df_thc)
+        try:
+            df_thc = optana.setup_trapezoidal_decay(df_thc)
+        except KeyError:
+            self.logger.info(f'do_theta_curves {symbol}~{strike} is not ready.')
+            return
         self.logger.debug(f'do_theta_curves {symbol}~{strike} df_sym shape: {df_sym.shape}, df_thc shape: {df_thc.shape}')
         strike_filter = (df_sym.strike == strike)
         ignore_count = 0
@@ -848,13 +852,13 @@ def main(sys_argv):
         return
     log_name = os.path.basename(sys_argv[0]).replace('.py', '')
     log_file = os.path.join(os.path.expanduser('~/logs/'),  log_name + '.log')
-    print('Log file:', log_file)
+    #print('Log file:', log_file)
     logger = get_rotating_logger(log_name, log_file)
     symlist_file = sys.argv[1]
     app_dir = os.path.dirname(symlist_file)
     quotes_dir = os.path.join(app_dir, 'quotes')
     chain_dir = os.path.join(app_dir, 'chain')
-    print(symlist_file, chain_dir, quotes_dir)
+    #print(symlist_file, chain_dir, quotes_dir)
     self = OptionAnalyzer(quotes_dir, chain_dir, logger=logger)
     wait_till_market_open(logger)
     wait_to_open_symbol_file(symlist_file)
@@ -889,7 +893,7 @@ def main(sys_argv):
                     break # Ok to proceed
                 else:
                     return # No new data for the day
-            print(f'Option data and quote data are out of sync: {quote_dt_load_dt_diff}')
+            print(f'Option data and quote data are out of sync: {quote_dt_load_dt_diff}. Sleep 5 seconds.')
             time.sleep(5)
             continue
         else:
@@ -906,7 +910,7 @@ def main(sys_argv):
         csv_file = os.path.join(app_dir, data_ts.strftime(f'data/{opt_type}~{hostname}~%F_%T.csv'))
         if os.path.exists(csv_file) and os.path.getsize(csv_file) > 0:
             print('Overriding existing file', csv_file)
-        print(df_type.shape, csv_file)
+        print(csv_file, df_type.shape)
         df_type.to_csv(csv_file, index=None)
     
 if __name__ == '__main__':
