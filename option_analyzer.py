@@ -899,19 +899,25 @@ def main(sys_argv):
         else:
             break
     data_ts = df_ts.load_dt.max()
+    data_dir = os.path.expanduser('~/lab/data')
     print('df_raw.shape:', df_raw.shape, 'data_ts:', data_ts.strftime('%F %T'))
     df_earning = self.count_days_from_earning_reports(df_quotes)
     print('Days to E:', self.d2e)
     for opt_type in ['put', 'call']:
+        csv_file = os.path.join(app_dir, data_ts.strftime(f'{data_dir}/{opt_type}~{hostname}~%F_%T.csv'))
+        if os.path.exists(csv_file) and os.path.getsize(csv_file) > 0:
+            print(f'{csv_file} already exists: {os.path.getsize(csv_file)} bytes')
+            continue
         df_type = self.select_options_by_type(df_raw, opt_type)
         poc = ParallelOptionCalculator(df_type, self, f'/run/user/{os.getuid()}/time_decay~{opt_type}')
-        csv_files = poc.do_all_theta_curves(symlist)
-        df_type = poc.assemble_time_decay_df(csv_files)
-        csv_file = os.path.join(app_dir, data_ts.strftime(f'data/{opt_type}~{hostname}~%F_%T.csv'))
-        if os.path.exists(csv_file) and os.path.getsize(csv_file) > 0:
-            print('Overriding existing file', csv_file)
-        print(csv_file, df_type.shape)
+        theta_curve_files = poc.do_all_theta_curves(symlist)
+        df_type = poc.assemble_time_decay_df(theta_curve_files)
         df_type.to_csv(csv_file, index=None)
+        print(csv_file, df_type.shape, os.path.getsize(csv_file), 'bytes')
     
 if __name__ == '__main__':
     main(sys.argv)
+    '''This script can be run in a loop:
+    cd ~/lab
+    while true; do sync; python option_analyzer.py symbols-$(hostname).txt;sleep 1; done
+    '''
