@@ -60,6 +60,10 @@ class FidelityPositions:
         _df = _df.groupby(['strategy', 'symbol']).sum().reset_index()
         risk_dict = dict(_df.groupby('strategy').amount.sum())
         strat_list = sorted(_df.strategy.unique(), reverse=True)
+        if len(strat_list) == 1:
+            strat = strat_list[0]
+            px.pie(_df, names='symbol', values='amount', title=f'{strat} option total: {risk_dict[strat].item()}').show()
+            return _df
         titles = [f'{s} option total: {risk_dict[s].item()}' for s in strat_list]
         fig = make_subplots(rows=1, cols=len(titles), subplot_titles=titles, specs=[[{'type': 'domain'}, {'type': 'domain'}]])
         for _j, strategy in enumerate(strat_list):

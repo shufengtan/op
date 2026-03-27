@@ -105,6 +105,9 @@ class OptionAnalyzer:
     def count_days_from_earning_reports(self, df_quotes):
         '''df_quotes from OptionFinder.get_quote_df()
         returns df with earningQtrReportDate and earningDays'''
+        for col in ['symbol', 'earningQtrReportDate']:
+            if col not in df_quotes.columns:
+                return
         _df = df_quotes.loc[:, ['symbol', 'earningQtrReportDate']]
         today = pd.Timestamp.today().normalize()
         _df['earningDays'] = (pd.to_datetime(_df.earningQtrReportDate) - today).dt.days
@@ -723,7 +726,7 @@ class ParallelOptionCalculator:
     opt_type: str = ''
     exclude_0dte: bool = True
     ignore_no_bid: bool = True
-    oi_lb: int = 100
+    oi_lb: int = 10
     proc_dict: dict = field(default_factory=dict)
     logger: logging.Logger = field(init=False)
     def __post_init__(self):
@@ -886,7 +889,7 @@ def main(sys_argv):
             time.sleep(5)
             continue
         quote_dt_load_dt_diff = np.abs((df_ts.load_dt - df_ts.quote_dt).max().total_seconds())
-        if quote_dt_load_dt_diff > 30:
+        if quote_dt_load_dt_diff > 45:
             hours = (pd.Timestamp.now() - pd.Timestamp.now().normalize()).seconds/3600
             if hours >= 16:
                 if hours <= 16.25:
@@ -909,7 +912,7 @@ def main(sys_argv):
             print(f'{csv_file} already exists: {os.path.getsize(csv_file)} bytes')
             continue
         df_type = self.select_options_by_type(df_raw, opt_type)
-        poc = ParallelOptionCalculator(df_type, self, f'/run/user/{os.getuid()}/time_decay~{opt_type}')
+        poc = ParallelOptionCalculator(df_type, self, f'/run/user/{os.getuid()}/time_decay~{opt_type}', oi_lb=100)
         theta_curve_files = poc.do_all_theta_curves(symlist)
         df_type = poc.assemble_time_decay_df(theta_curve_files)
         df_type.to_csv(csv_file, index=None)
