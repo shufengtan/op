@@ -419,7 +419,7 @@ class OptionAnalyzer:
     def compute_all_time_decay_metrics_for_symbols(self, df, sym_list, ignore_no_bid=True, exclude_0dte=True, oi_lb=0):
         '''Returns df with symbol, dte, strike, dth, dtz, half_dte_resid, resid, premium columns
         input df must be either put or call, not both'''
-        assert 'type' not in df.columns or df.type.nunique == 1
+        assert 'type' not in df.columns or df.type.nunique() == 1
         opt_type = 'P' if df.Delta.min() < 0 else 'C'
         print(f'Assume option type is {opt_type} based on delta')
         res = []
@@ -734,7 +734,7 @@ class ParallelOptionCalculator:
         if not os.path.exists(self.buffer_dir):
             os.mkdir(self.buffer_dir)
         self.logger = self.optana.logger
-        assert 'type' not in self.df.columns or self.df.type.nunique == 1
+        assert 'type' not in self.df.columns or self.df.type.nunique() == 1
         self.opt_type = 'P' if self.df.Delta.min() < 0 else 'C'
         self.logger.debug(f'Assume option type is {self.opt_type} based on delta')
         soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
