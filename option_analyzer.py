@@ -461,9 +461,9 @@ class OptionAnalyzer:
         if opt_type == 'C':
             add_cols += ['overpaid', 'leverage']
         df_res = df_res.join(df.set_index(_index).loc[:, add_cols]).reset_index()
-        if opt_type == 'P':
-            df_res['dteProfit'] = df_res.mid/df_res.strike/df_res.dte*100*365 - df_res.pctSpread/2
-            df_res['hdteProfit'] = df_res.mid/2/df_res.strike/np.ceil(df_res.dth)*100*365 - df_res.pctSpread/2
+        # Profits for selling put and call
+        df_res['dteProfit'] = df_res.mid/(df_res.strike if opt_type == 'P' else df_res.lastPrice)/df_res.dte*100*365 - df_res.pctSpread/2
+        df_res['hdteProfit'] = df_res.mid/2/(df_res.strike if opt_type == 'P' else df_res.lastPrice)/np.ceil(df_res.dth)*100*365 - df_res.pctSpread/2
         df_res['E'] = df_res.symbol.apply(self.d2e.get)
         return df_res.drop(columns=['dth', 'dtz'])
 
