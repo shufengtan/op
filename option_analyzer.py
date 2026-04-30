@@ -218,7 +218,10 @@ class OptionAnalyzer:
         df = pd.concat([df_raw._, df_raw[opt_type], df_raw.__.loc[:, ['expDt']]], axis=1)
         df['mid'] = (df.Bid + df.Ask)/2
         df['pctSpread'] = 100*(df.Ask - df.Bid)/df.mid
-        df['expDt'] = pd.to_datetime(df.expDt).dt.strftime('%F')
+        try:
+            df['expDt'] = pd.to_datetime(df.expDt).dt.strftime('%F')
+        except ValueError:
+            pass
         df = df.rename(columns={'ImpliedVolatility': 'ImpVola'})
         ignored_cols = [c for c in df.columns if c in ignored_cols]
         if len(ignored_cols) > 0:
@@ -462,10 +465,19 @@ class OptionAnalyzer:
             add_cols += ['overpaid', 'leverage']
         df_res = df_res.join(df.set_index(_index).loc[:, add_cols]).reset_index()
         # Profits for selling put and call
-        df_res['dteProfit'] = df_res.mid/(df_res.strike if opt_type == 'P' else df_res.lastPrice)/df_res.dte*100*365 - df_res.pctSpread/2
-        df_res['hdteProfit'] = df_res.mid/2/(df_res.strike if opt_type == 'P' else df_res.lastPrice)/np.ceil(df_res.dth)*100*365 - df_res.pctSpread/2
+        # Fidelity charges $0.65 per option at STO, 0 at BTC if premium < 1
+        fidelity_fee = 0.0065
+        dte_profit = df_res.mid - fidelity_fee
+        df_res['dteProfit'] = dte_profit / (df_res.strike if opt_type == 'P' else df_res.lastPrice)/df_res.dte*100*365 - df_res.pctSpread/2
+        dth_profit = df_res.mid/2 - df_res.mid.apply(lambda x: fidelity_fee if x <= 2 else 2*fidelity_fee)
+        df_res['dthProfit'] = dth_profit / (df_res.strike if opt_type == 'P' else df_res.lastPrice)/np.ceil(df_res.dth)*100*365 - df_res.pctSpread/2
         df_res['E'] = df_res.symbol.apply(self.d2e.get)
-        return df_res.drop(columns=['dth', 'dtz'])
+        if opt_type == 'P':
+            df_res['dthStrikeMargin'] = 100 * (df_res.lastPrice*(1 - df_res.ImpVola * np.sqrt(df_res.dth/365)) - df_res.strike + df_res.mid) / df_res.strike
+        elif opt_type == 'C':
+            df_res['dthStrikeMargin'] = 100 * (df_res.strike - df_res.lastPrice*(1 + df_res.ImpVola * np.sqrt(df_res.dth/365)) + df_res.mid) / df_res.strike
+        reordered_cols = [c for c in df_res.columns if c[:2] != 'dt'] + [c for c in df_res.columns if c[:2] == 'dt']
+        return df_res[reordered_cols]
 
     def shortcut_time_decay(self, df_thc, symbol, strike, dte, premium):
         if np.isnan(df_thc.iloc[0]['avg_theta']):
@@ -845,6 +857,45 @@ def get_rotating_logger(log_name, log_file):
     logger.addHandler(handler)
     logger.level = logging.INFO
     return logger
+
+def run_now(symlist_file):
+    log_name = os.path.basename(sys_argv[0]).replace('.py', '')
+    log_file = os.path.join(os.path.expanduser('~/logs/'),  log_name + '~test.log')
+    logger = get_rotating_logger(log_name, log_file)
+    app_dir = os.path.dirname(symlist_file)
+    quotes_dir = os.path.join(app_dir, 'quotes')
+    chain_dir = os.path.join(app_dir, 'chain')
+    print('Log file:', log_file, 'chain dir:', chain_dir, 'quotes dir:', quotes_dir)
+    self = OptionAnalyzer(quotes_dir, chain_dir, logger=logger)
+    with open(symlist_file) as fo:
+        symlist = [_.rstrip() for _ in fo]
+    this_symlist = self.get_updated_symbol_list(age_ub=60)
+    sym_added = set(this_symlist) - set(symlist)
+    sym_missing = set(symlist) - set(this_symlist)
+    if len(sym_missing) > 0:
+            print(f'Option data missing for {sym_missing}. Continue any way.')
+    df_quotes, df_shortint, df_vola = self.get_quote_df(symlist)
+    df_raw = self.build_option_df(symlist)
+    df_ts = self.get_data_timestamps(df_raw)
+    load_dt_diff = (df_ts.load_dt.max() - df_ts.load_dt.min()).total_seconds()
+    if load_dt_diff > 60:
+        print(f'Option data load_dt difference {load_dt_diff} is over 60 seconds. Continue any way.')
+    data_ts = df_ts.load_dt.max()
+    data_dir = os.path.expanduser('~/lab/data')
+    print('df_raw.shape:', df_raw.shape, 'data_ts:', data_ts.strftime('%F %T'))
+    df_earning = self.count_days_from_earning_reports(df_quotes)
+    print('Days to E:', self.d2e)
+    for opt_type in ['put', 'call']:
+        csv_file = os.path.join(app_dir, data_ts.strftime(f'{data_dir}/{opt_type}~{hostname}~%F_%T.csv'))
+        if os.path.exists(csv_file) and os.path.getsize(csv_file) > 0:
+            print(f'{csv_file} already exists: {os.path.getsize(csv_file)} bytes')
+            continue
+        df_type = self.select_options_by_type(df_raw, opt_type)
+        poc = ParallelOptionCalculator(df_type, self, f'/run/user/{os.getuid()}/time_decay~{opt_type}', oi_lb=100)
+        theta_curve_files = poc.do_all_theta_curves(symlist)
+        df_type = poc.assemble_time_decay_df(theta_curve_files)
+        df_type.to_csv(csv_file, index=None)
+        print(csv_file, df_type.shape, os.path.getsize(csv_file), 'bytes')
 
 def main(sys_argv):
     import socket
