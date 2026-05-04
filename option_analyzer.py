@@ -218,10 +218,7 @@ class OptionAnalyzer:
         df = pd.concat([df_raw._, df_raw[opt_type], df_raw.__.loc[:, ['expDt']]], axis=1)
         df['mid'] = (df.Bid + df.Ask)/2
         df['pctSpread'] = 100*(df.Ask - df.Bid)/df.mid
-        try:
-            df['expDt'] = pd.to_datetime(df.expDt).dt.strftime('%F')
-        except ValueError:
-            pass
+        df['expDt'] = pd.to_datetime(df.expDt, format='mixed').dt.strftime('%F')
         df = df.rename(columns={'ImpliedVolatility': 'ImpVola'})
         ignored_cols = [c for c in df.columns if c in ignored_cols]
         if len(ignored_cols) > 0:
