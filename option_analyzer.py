@@ -38,7 +38,7 @@ class OptionAnalyzer:
             symlist = [os.path.basename(f) for f, age in age_dict.items() if age <= age_limit]
             self.logger.warning(f'get_updated_symbol_list: no update in the past {age_ub} seconds.')
         return symlist
-        
+
     def get_quote_df(self, symlist):
         '''Updates self.last_price and returns three dataframes: quote, short interest, volatility'''
         dod = []
@@ -55,7 +55,7 @@ class OptionAnalyzer:
                 except json.JSONDecodeError:
                     log.warning(f'get_quote_df: failed to decode quote file {quote_file}')
                     continue
-                resp_list = quote_dict.get('quoteResponse')
+                resp_list = quote_dict.get('quotes')
                 for resp_dict in resp_list:
                     if resp_dict.get('status', {}).get('errorCode') != 0:
                         log.warning(f"get_quote_df: skipped file {quote_file} due to error status {resp_dict.get('status')}")
