@@ -2,6 +2,7 @@ import requests
 import os
 import sys
 import time
+import re
 from multiprocessing import Process
 from subprocess import getoutput
 import pandas as pd
@@ -73,19 +74,18 @@ class FidelityOptionDataDownloader(object):
         session.cookies.update(self.cookie)
         error = None
         resp = None
+        _symbol = re.findall(r'symbol=([^\&]+)', url)
         for attempt in range(1, retries+1):
             try:
                 resp = session.get(url)
-            except requests.exceptions.TooManyRedirects as e:
-                error = e
-                log.warning(f'get_url TooManyRedirects: {error}')
+            except requests.exceptions.TooManyRedirects as err:
+                log.warning(f'get_url {_symbol} TooManyRedirects: {err}')
                 break
-            except ValueError as e:
-                error = e
-                log.warning(f'get_url ValueError: {error}')
+            except ValueError as err:
+                log.warning(f'get_url {_symbol} ValueError: {err}')
                 break
-            except requests.exceptions.ConnectionError as e:
-                log.warning(f'get_url ConnectionError: {e}. Retry in 0.5 seconds')
+            except requests.exceptions.ConnectionError as err:
+                log.warning(f'get_url {_symbol} ConnectionError: {err}. Retry in 0.5 seconds')
                 time.sleep(0.5)
                 continue
             if resp.status_code == 200:
@@ -96,15 +96,14 @@ class FidelityOptionDataDownloader(object):
                 else:
                     return resp.text
             if resp.status_code == 500:
-                _symbol = re.findall(r'symbol=([^\&]+)', url)
-                log.warning(f'get_url http error {resp.status_code} {_symbol}: will create empty file.\n{resp.text}')
+                log.warning(f'get_url {_symbol} http 500 error: {resp.text}. Will create empty file.')
                 return ''
             if resp.status_code == 403 and attempt <= retries:
                 awhile = 2**attempt
-                log.warning(f'get_url http status code {resp.status_code}. Retry in {awhile} seconds')
+                log.warning(f'get_url {_symbol} http 403 status code. Retry in {awhile} seconds')
                 time.sleep(awhile)
         if error is None and resp is not None:
-            log.warning(f'get_url http error {resp.status_code}: {resp.text}')
+            log.warning(f'get_url {_symbol} http error {resp.status_code}: {resp.text}')
             error = resp.status_code
         if error is not None:
             with open(self.abort_signal_file, 'w') as wfo:
@@ -118,7 +117,6 @@ class FidelityOptionDataDownloader(object):
         url += f'&strikes={strikes}'
         url += '&expirationDates=' + ','.join(expiration_dates).replace('/', '%2F').replace(',', '%2C')
         url += '&settlementTypes=' + ','.join(settlement_types).replace(' ', '%20').replace('|', '%7C').replace(',', '%2C')
-        print(len(expiration_dates), expiration_dates[-1], url)
         resp_text = self.get_url(url)
         if resp_text is None or (resp_text != '' and resp_text.find('{"callsAndPuts":') < 0):
             self.logger.warning(f'get_option_data {_symbol} failed to get callsAndPuts data: {resp_text[:200].replace('\n', ' ') if resp_text else resp_text}')
