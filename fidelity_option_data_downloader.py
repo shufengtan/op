@@ -96,7 +96,8 @@ class FidelityOptionDataDownloader(object):
                 else:
                     return resp.text
             if resp.status_code == 500:
-                log.warning(f'get_url http error {resp.status_code}: will create empty file.\n{resp.text}')
+                _symbol = re.findall(r'symbol=([^\&]+)', url)
+                log.warning(f'get_url http error {resp.status_code} {_symbol}: will create empty file.\n{resp.text}')
                 return ''
             if resp.status_code == 403 and attempt <= retries:
                 awhile = 2**attempt
@@ -132,7 +133,7 @@ class FidelityOptionDataDownloader(object):
         strikes = self.strikes if strikes is None else strikes
         expiration_dates, settlement_types = get_option_expiration_dates()
         if num_exp_dt is None:
-            num_exp_dt = 25 if symbol == 'QQQ' else 20 if symbol == 'SPY' else -1
+            num_exp_dt = 22 if symbol == 'QQQ' else 20 if symbol == 'SPY' else -1
         return self.get_option_data(symbol, strikes, expiration_dates[:num_exp_dt], settlement_types[:num_exp_dt], self.chain_dir)
 
     def get_quotes(self, symbol):
