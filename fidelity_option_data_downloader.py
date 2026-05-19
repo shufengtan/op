@@ -7,7 +7,7 @@ from multiprocessing import Process
 from subprocess import getoutput
 import pandas as pd
 import random
-from option_expiration_dates import get_option_expiration_dates
+import json
 import logging
 from logging.handlers import RotatingFileHandler
 
@@ -21,10 +21,11 @@ def get_rotating_logger(log_name, log_file):
 
 class FidelityOptionDataDownloader(object):
     # API samples as of May 13, 2026
+    #          https://digital.fidelity.com/ftgw/digital/api-exp-options-research/api/option-expirations/v1?symbol=SPY
     #          https://digital.fidelity.com/ftgw/digital/api-exp-options-research/api/slo-chain/v1?strikes=All&expirationDates=05%2F15%2F2026&settlementTypes=May%2015%202026%7CM&symbol=SPY&adjustedOptionsData=true
     #          https://digital.fidelity.com/ftgw/digital/api-exp-options-research/api/quotes/v1?symbol=SPY
     api_url = 'https://digital.fidelity.com/ftgw/digital/api-exp-options-research/api'
-    def __init__(self, chain_dir, quotes_dir, cookie_file, logger, strikes):
+    def __init__(self, chain_dir, quotes_dir, cookie_file, logger):
         '''days: 
         '''
         self.chain_dir = chain_dir
@@ -46,7 +47,7 @@ class FidelityOptionDataDownloader(object):
         self.logger = logger
         self.sym_proc = {}
         self.abort_signal_file = cookie_file + '.expired'
-        self.strikes = strikes
+        self.exp_dates = {} # yyyymmdd: {symbol: [(exp_dt, type
 
     def read_cookie(self):
         if not os.path.exists(self.cookie_file) or os.path.getsize(self.cookie_file) == 0:
@@ -85,8 +86,8 @@ class FidelityOptionDataDownloader(object):
                 log.warning(f'get_url {_symbol} ValueError: {err}')
                 break
             except requests.exceptions.ConnectionError as err:
-                log.warning(f'get_url {_symbol} ConnectionError: {err}. Retry in 0.5 seconds')
-                time.sleep(0.5)
+                log.warning(f'get_url {_symbol} ConnectionError: {err.strerror}. Retry in 1 seconds')
+                time.sleep(1)
                 continue
             if resp.status_code == 200:
                 text = resp.text
@@ -110,29 +111,77 @@ class FidelityOptionDataDownloader(object):
                 wfo.write(f'{error}')
         return
 
-    def get_option_data(self, symbol, strikes, expiration_dates, settlement_types, save_dir):
+    def setup_exp_dates_cache(self):
+        today = pd.Timestamp.today().strftime('%F')
+        if today not in self.exp_dates:
+            self.exp_dates[today] = {}
+        for dt in list(self.exp_dates.keys()):
+            if dt != today:
+                self.exp_dates.pop(dt)
+        return today
+
+    def get_option_expiration_dates(self, symbol):
+        today = self.setup_exp_dates_cache()
         _symbol = symbol.replace('-', '/')
-        url = self.api_url + f'/slo-chain/v1?adjustedOptionsData=true'
-        url += '&symbol=' + _symbol
-        url += f'&strikes={strikes}'
-        url += '&expirationDates=' + ','.join(expiration_dates).replace('/', '%2F').replace(',', '%2C')
-        url += '&settlementTypes=' + ','.join(settlement_types).replace(' ', '%20').replace('|', '%7C').replace(',', '%2C')
+        if _symbol in self.exp_dates[today]:
+            return self.exp_dates[today][_symbol]
+        url = self.api_url + '/option-expirations/v1?symbol=' + _symbol
         resp_text = self.get_url(url)
-        if resp_text is None or (resp_text != '' and resp_text.find('{"callsAndPuts":') < 0):
-            self.logger.warning(f'get_option_data {_symbol} failed to get callsAndPuts data: {resp_text[:200].replace('\n', ' ') if resp_text else resp_text}')
+        try:
+            resp_dict = json.loads(resp_text)
+        except json.JSONDecodeError:
+            self.logger.warning(f'get_option_expiration_dates: JSONDecodeError on symbol {_symbol}')
             return
-        if resp_text is not None:
+        if type(resp_dict) is dict:
+            expirations = resp_dict.get('expirations')
+            exp_d_p = [(pd.Timestamp(_.get('date')), _.get('optionPeriodicity')) for _ in expirations]
+            exp_dt = [d.strftime('%m/%d/%Y') for d, p in exp_d_p]
+            exp_dt_p = [d.strftime('%b %d %Y') + '|' + p for d, p in exp_d_p]
+            self.exp_dates[today][_symbol] = (exp_dt, exp_dt_p)
+            return exp_dt, exp_dt_p
+        self.logger.warning(f'get_option_expiration_dates failed with resp_dict = {resp_dict}')
+        return
+
+    def get_option_data(self, symbol, strikes, expiration_dates, settlement_types, save_dir):
+        log = self.logger
+        _symbol = symbol.replace('-', '/')
+        _url = self.api_url + '/slo-chain/v1?adjustedOptionsData=true'
+        _url += '&symbol=' + _symbol
+        _url += f'&strikes={strikes}'
+        batch_size = 7
+        calls_n_puts = []
+        for di in range(0, len(expiration_dates), batch_size):
+            _exp_dt = expiration_dates[di:di+batch_size]
+            url = _url + '&expirationDates=' + '%2C'.join(_exp_dt).replace('/', '%2F')
+            url += '&settlementTypes=' + '%2C'.join(settlement_types[di:di+batch_size]).replace(' ', '%20')
+            resp_text = self.get_url(url)
+            if resp_text is not None and resp_text.find('{"callsAndPuts":') >= 0:
+                try:
+                    resp_dict = json.loads(resp_text)
+                except json.JSONDecodeError:
+                    log.warning(f'get_option_data {symbol} JSONDecodeError for {expiration_dates[di:di+batch_size]}')
+                    continue
+                cnp = resp_dict['callsAndPuts']
+                calls_n_puts += cnp
+                exp_dt_received = set([x['expirationData']['date'] for x in cnp])
+                if len(exp_dt_received) < len(_exp_dt):
+                    log.warning(f'get_option_data {symbol}: {len(_exp_dt)} exp dates requested, {len(exp_dt_received)} received. batch size = {batch_size}')
+            else:
+                log.warning(f'get_option_data {_symbol} {expiration_dates[di:di+batch_size]} failed to get callsAndPuts data: {resp_text[:200].replace('\n', ' ') if resp_text else resp_text}')
+                continue
+        if len(calls_n_puts) > 0:
             chain_file = os.path.join(save_dir, symbol.replace('/', '-'))
             with open(chain_file, 'w') as wfo:
-                wfo.write(resp_text)
-            return resp_text
+                json.dump({'callsAndPuts': calls_n_puts}, wfo)
+            return calls_n_puts
 
-    def get_slo_chain_data(self, symbol, strikes=None, num_exp_dt=None):
-        strikes = self.strikes if strikes is None else strikes
-        expiration_dates, settlement_types = get_option_expiration_dates()
-        if num_exp_dt is None:
-            num_exp_dt = 22 if symbol == 'QQQ' else 20 if symbol == 'SPY' else -1
-        return self.get_option_data(symbol, strikes, expiration_dates[:num_exp_dt], settlement_types[:num_exp_dt], self.chain_dir)
+    def get_slo_chain_data(self, symbol, strikes='All'):
+        exp_dt = self.get_option_expiration_dates(symbol)
+        if exp_dt and len(exp_dt) == 2:
+            expiration_dates, settlement_types = exp_dt
+            return self.get_option_data(symbol, strikes, expiration_dates, settlement_types, self.chain_dir)
+        else:
+            return
 
     def get_quotes(self, symbol):
         _symbol = symbol.replace('-', '/')
@@ -213,6 +262,8 @@ class FidelityOptionDataDownloader(object):
         else:
             get_size = lambda s: (lambda _f: os.path.getsize(_f) if os.path.exists(_f) else 0)(os.path.join(self.chain_dir, s))
             symbol_list = sorted(symbol_list, key=get_size)
+            for symbol in symbol_list:
+                self.get_option_expiration_dates(symbol)
             for idx in range(0, len(symbol_list), batch_size):
                 if os.path.exists(self.abort_signal_file) and not self.read_cookie():
                     self.logger.warning(f'download_option_chain found abort signal.')
@@ -252,7 +303,7 @@ def main(batch_size=5):
     symbol_file = sys.argv[1]
     ntfy_topic = sys.argv[2]
     ntfyer = Ntfy(ntfy_topic)
-    ocd = FidelityOptionDataDownloader(chain_dir, quotes_dir, cookie_file, logger, strikes='ALL')
+    ocd = FidelityOptionDataDownloader(chain_dir, quotes_dir, cookie_file, logger)
     file_ripe_age = 10
     while True:
         if os.path.exists(ocd.abort_signal_file) and not ocd.read_cookie() or ocd.get_cookie_age() >= 3510:
