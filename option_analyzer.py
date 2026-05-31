@@ -538,6 +538,21 @@ class OptionAnalyzer:
             df_dict[opt_type] = self.finalize_time_decay_df(df_res, dfcp[dfcp.type==opt_type], opt_type)
         return df_dict
 
+    def check_put_spreads(self, dfp_leg_1, r_idx=0, risk_limit=100_000, max_oi_ratio=0.1):
+        symlist = dfp_leg_1.symbol.unique()
+        df_quotes, df_shortint, df_vola = self.get_quote_df(symlist)
+        df_raw = self.build_option_df(symlist)
+        dfp = self.select_options_by_type(df_raw, 'put').loc[:, ['symbol', 'dte', 'strike', 'mid', 'Delta', 'OpenInterest']]
+        dfp = dfp.rename(columns=dict([(c, c+'_2') for c in dfp.columns if c not in ['symbol', 'dte']]))
+        _df = dfp_leg_1.iloc[[r_idx]].merge(dfp, how='inner', on=['symbol', 'dte'])
+        _df = _df[(_df.strike_2 < _df.strike) & (_df.strike_2 >= 0.85*_df.strike)].sort_values(by=['symbol', 'strike_2'], ascending=False)
+        _df['max_gain'] = 100*(_df['mid'] - _df['mid_2']) - 1.3
+        _df['max_loss'] = 100*(_df['strike'] - _df['strike_2']) - _df['max_gain']
+        _df['n_options'] = risk_limit / _df['max_loss']
+        _df['gain_limit'] = np.minimum(np.floor(_df.n_options), _df.OpenInterest_2 * max_oi_ratio)*_df.max_gain
+        _df['gain_limit_pd'] = _df.gain_limit/_df.dte
+        return _df.sort_values(by='gain_limit', ascending=False)
+
     def get_rows_with_closest_value_in_column(self, df, col, target_value):
         groupers = [c for c in df.columns if c != col]
         df = df.drop_duplicates(subset=groupers + [col])
