@@ -457,17 +457,17 @@ class OptionAnalyzer:
         df_res['dtzr'] = df_res.dtz/df_res.dte
         _index = ['symbol', 'dte', 'strike']
         df_res = df_res.set_index(_index)
-        add_cols = ['mid', 'lastPrice', 'pctSpread', 'Delta', 'Theta', 'moneyness', 'expDt', 'ImpVola', 'OpenInterest']
+        add_cols = ['Bid', 'mid', 'lastPrice', 'pctSpread', 'Delta', 'Theta', 'moneyness', 'expDt', 'ImpVola', 'OpenInterest']
         if opt_type == 'C':
             add_cols += ['overpaid', 'leverage']
         df_res = df_res.join(df.set_index(_index).loc[:, add_cols]).reset_index()
         # Profits for selling put and call
         # Fidelity charges $0.65 per option at STO, 0 at BTC if premium < 1
         fidelity_fee = 0.0065
-        dte_profit = df_res.mid - fidelity_fee
-        df_res['dteProfit'] = dte_profit / (df_res.strike if opt_type == 'P' else df_res.lastPrice)/df_res.dte*100*365 - df_res.pctSpread/2
-        dth_profit = df_res.mid/2 - df_res.mid.apply(lambda x: fidelity_fee if x <= 2 else 2*fidelity_fee)
-        df_res['dthProfit'] = dth_profit / (df_res.strike if opt_type == 'P' else df_res.lastPrice)/np.ceil(df_res.dth)*100*365 - df_res.pctSpread/2
+        dte_profit = df_res.Bid - fidelity_fee # Use bid price so we don't have to offset spread
+        df_res['dteProfit'] = dte_profit / (df_res.strike if opt_type == 'P' else df_res.lastPrice)*100/df_res.dte*365
+        dth_profit = df_res.Bid/2 - df_res.mid.apply(lambda x: fidelity_fee if x <= 1.3 else 2*fidelity_fee)
+        df_res['dthProfit'] = dth_profit / (df_res.strike if opt_type == 'P' else df_res.lastPrice)*100/np.ceil(df_res.dth)*365
         df_res['E'] = df_res.symbol.apply(self.d2e.get)
         if opt_type == 'P':
             df_res['dthStrikeMargin'] = 100 * (df_res.lastPrice*(1 - df_res.ImpVola * np.sqrt(df_res.dth/365)) - df_res.strike + df_res.mid) / df_res.strike
@@ -553,7 +553,9 @@ class OptionAnalyzer:
         _df['n_options'] = np.minimum(np.floor(risk_limit/_df['max_loss']), np.floor(_df.loc[:, ['OpenInterest_2', 'OpenInterest']] * max_oi_ratio).min(axis=1)).astype(int)
         _df['gain_limit'] = _df.n_options * _df.max_gain
         _df['gain_limit_pd'] = _df.gain_limit/_df.dte
-        lead_cols = ['symbol', 'expDt', 'strike',  'strike_2', 'n_options', 'gain_limit', 'dte', 'gain_limit_pd', 'dthProfit', 'dthStrikeMargin', 'mid', 'mid_2', 'OpenInterest', 'OpenInterest_2']
+        _df['dthProfit_2'] = _df.max_gain/2/(_df.max_loss + 100 * _df.mid_2)*100/_df.dth*365
+        _df['SymbolExpDt'] = _df.symbol + ':' + _df.expDt
+        lead_cols = ['SymbolExpDt', 'strike',  'strike_2', 'n_options', 'gain_limit', 'dte', 'gain_limit_pd', 'dthProfit_2', 'dthStrikeMargin', 'lastPrice', 'mid', 'mid_2', 'OpenInterest', 'OpenInterest_2']
         cols = lead_cols + [_ for _ in _df.columns if _ not in lead_cols]
         return _df.loc[:, cols].sort_values(by='gain_limit_pd', ascending=False)
 
