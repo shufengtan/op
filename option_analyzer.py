@@ -538,7 +538,7 @@ class OptionAnalyzer:
             df_dict[opt_type] = self.finalize_time_decay_df(df_res, dfcp[dfcp.type==opt_type], opt_type)
         return df_dict
 
-    def rank_put_spreads(self, dfp_leg_1, risk_limit=100_000, max_oi_ratio=0.1):
+    def rank_put_spreads(self, dfp_leg_1, risk_limit=100_000, max_oi_ratio=0.1, buying_power=500_000):
         symlist = dfp_leg_1.symbol.unique()
         df_quotes, df_shortint, df_vola = self.get_quote_df(symlist)
         df_raw = self.build_option_df(symlist)
@@ -546,18 +546,25 @@ class OptionAnalyzer:
         dfp_leg_2 = self.select_options_by_type(df_raw, 'put').loc[:, leg_2_cols]
         dfp_leg_2 = dfp_leg_2.rename(columns=dict([(c, c+'_2') for c in leg_2_cols[2:]]))
         _df = dfp_leg_1.merge(dfp_leg_2, how='left', on=['symbol', 'dte'])
-        _df = _df[(_df.strike_2 < _df.strike)]
+        _df = _df[(_df.strike_2 < _df.strike) & (_df.mid_2 <= 0.1*_df.mid)]
         _df = _df.sort_values(by=['dthProfit', 'symbol', 'dte', 'strike', 'strike_2'], ascending=[False, True, True, True, False])
         _df['max_gain'] = 100*(_df['mid'] - _df['mid_2']) - 1.3
         _df['max_loss'] = 100*(_df['strike'] - _df['strike_2']) - _df['max_gain']
-        _df['n_options'] = np.minimum(np.floor(risk_limit/_df['max_loss']), np.floor(_df.loc[:, ['OpenInterest_2', 'OpenInterest']] * max_oi_ratio).min(axis=1)).astype(int)
-        _df['gain_limit'] = _df.n_options * _df.max_gain
-        _df['gain_limit_pd'] = _df.gain_limit/_df.dte
-        _df['dthProfit_2'] = _df.max_gain/2/(_df.max_loss + 100 * _df.mid_2)*100/_df.dth*365
+        n_options_1 = np.floor(risk_limit/_df['max_loss'])
+        n_options_2 = np.floor(buying_power/_df['strike']/100)
+        n_options_3 = np.floor(_df.loc[:, ['OpenInterest', 'OpenInterest_2']] * max_oi_ratio).min(axis=1)
+        _df['n_options'] = np.minimum(np.minimum(n_options_1, n_options_2), n_options_3).astype(int)
+        _df['r1'] = _df['strike']/(_df['strike'] - _df['strike_2'])
+        _df['r2'] = (_df['mid'] - _df['mid_2'])/_df['mid']
+        _df['multiplier'] = _df['r1']*_df['r2']
+        _df['dthProfit_2'] = _df['dthProfit'] * _df['multiplier']
+        _df['cost'] = _df.n_options * (_df.max_loss + 100*_df.mid_2)
+        _df['worst_case'] = _df.n_options*100*_df.strike
         _df['SymbolExpDt'] = _df.symbol + ':' + _df.expDt
-        lead_cols = ['SymbolExpDt', 'strike',  'strike_2', 'n_options', 'gain_limit', 'dte', 'gain_limit_pd', 'dthProfit_2', 'dthStrikeMargin', 'lastPrice', 'mid', 'mid_2', 'OpenInterest', 'OpenInterest_2']
+        _df['credit'] = _df.n_options * _df.max_gain
+        lead_cols = ['SymbolExpDt', 'dte', 'strike',  'strike_2', 'dthProfit_2', 'dthStrikeMargin', 'credit', 'dthProfit', 'n_options', 'worst_case', 'multiplier', 'cost', 'lastPrice', 'mid', 'mid_2', 'OpenInterest', 'OpenInterest_2']
         cols = lead_cols + [_ for _ in _df.columns if _ not in lead_cols]
-        return _df.loc[:, cols].sort_values(by='gain_limit_pd', ascending=False)
+        return _df.loc[:, cols].sort_values(by='credit', ascending=False).drop(columns=['symbol', 'expDt'])
 
     def get_rows_with_closest_value_in_column(self, df, col, target_value):
         groupers = [c for c in df.columns if c != col]
