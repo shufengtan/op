@@ -538,7 +538,7 @@ class OptionAnalyzer:
             df_dict[opt_type] = self.finalize_time_decay_df(df_res, dfcp[dfcp.type==opt_type], opt_type)
         return df_dict
 
-    def rank_put_spreads(self, dfp_leg_1, risk_limit=100_000, max_oi_ratio=0.1, buying_power=500_000):
+    def rank_put_spreads(self, dfp_leg_1, risk_limit=100_000, max_oi_ratio=0.1, leg_2_ratio_ub=0.05, buying_power=500_000):
         symlist = dfp_leg_1.symbol.unique()
         df_quotes, df_shortint, df_vola = self.get_quote_df(symlist)
         df_raw = self.build_option_df(symlist)
@@ -546,7 +546,7 @@ class OptionAnalyzer:
         dfp_leg_2 = self.select_options_by_type(df_raw, 'put').loc[:, leg_2_cols]
         dfp_leg_2 = dfp_leg_2.rename(columns=dict([(c, c+'_2') for c in leg_2_cols[2:]]))
         _df = dfp_leg_1.merge(dfp_leg_2, how='left', on=['symbol', 'dte'])
-        _df = _df[(_df.strike_2 < _df.strike) & (_df.mid_2 <= 0.1*_df.mid)]
+        _df = _df[(_df.strike_2 < _df.strike) & (_df.mid_2 <= leg_2_ratio_ub*_df.mid)]
         _df = _df.sort_values(by=['dthProfit', 'symbol', 'dte', 'strike', 'strike_2'], ascending=[False, True, True, True, False])
         _df['max_gain'] = 100*(_df['mid'] - _df['mid_2']) - 1.3
         _df['max_loss'] = 100*(_df['strike'] - _df['strike_2']) - _df['max_gain']
