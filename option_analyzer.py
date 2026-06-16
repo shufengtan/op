@@ -198,7 +198,12 @@ class OptionAnalyzer:
             df['lastPrice'] = last_price
             df['quote_dt'] = quote_dt # format='%m/%d/%Y %I:%M:%S%p'
         df['load_dt'] = mtime
-        return df
+        if df.contractType.nunique() > 1:
+            ignored_contract_types = [_ for _ in df.contractType.unique() if _ != 'NORMMAL']
+            log.info(f'create_option_chain_df {symbol} dropped contractType {ignored_contract_types}')
+            return df[df.contractType == 'NORMAL']
+        else:
+            return df
 
     def get_data_timestamps(self, df_raw):
         _df = pd.concat([df_raw._.symbol, df_raw.__.quote_dt, df_raw.__.load_dt], axis=1).drop_duplicates()
@@ -795,7 +800,9 @@ class ParallelOptionCalculator:
         res = []
         for dte in sorted(df_thc.dte, reverse=True):
             dte_row = df_sym[strike_filter & (df_sym.dte == dte)]
-            assert dte_row.shape[0] == 1
+            if dte_row.shape[0] != 1:
+                print(f'Unexpected: do_theta_curve {symbol} {strike} strike {dte} dte dte_row {dte_row.shape}')
+                return
             dte_row = dte_row.iloc[0]
             if (self.exclude_0dte and dte == 0) or (self.ignore_no_bid and (dte_row['Bid'] == 0 or dte_row['OpenInterest'] <= self.oi_lb)):
                 ignore_count += 1
@@ -829,7 +836,7 @@ class ParallelOptionCalculator:
                 proc = Process(target=self.do_theta_curves, args=(symbol, strike, df_sym))
                 proc_dict[(symbol, strike)] = proc
                 proc.start()
-            print(symbol, len(strike_list), 'theta curves processed in %.1f seconds' % (time.perf_counter() - t0))
+            print(symbol, len(strike_list), opt_type, 'theta curves processed in %.1f seconds' % (time.perf_counter() - t0))
         for i in range(1, 100):
             if self.count_zombies() == 0:
                 self.logger.debug(f'zombie count = 0 after {i} kills')
