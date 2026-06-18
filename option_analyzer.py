@@ -199,7 +199,7 @@ class OptionAnalyzer:
             df['quote_dt'] = quote_dt # format='%m/%d/%Y %I:%M:%S%p'
         df['load_dt'] = mtime
         if df.contractType.nunique() > 1:
-            ignored_contract_types = [_ for _ in df.contractType.unique() if _ != 'NORMMAL']
+            ignored_contract_types = [_ for _ in df.contractType.unique() if _ != 'NORMAL']
             log.info(f'create_option_chain_df {symbol} dropped contractType {ignored_contract_types}')
             return df[df.contractType == 'NORMAL']
         else:
