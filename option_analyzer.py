@@ -559,11 +559,15 @@ class OptionAnalyzer:
         )
 
         # 3. Aggregate to find total Net GEX
-        total_net_gex = df.groupby('symbol')["dollar_gex"].sum().reset_index()
+        _g = df.groupby('symbol')
+        total_net_gex = _g["lastPrice"].first().reset_index().merge(_g["dollar_gex"].sum().reset_index(), on='symbol')
 
         # 4. Group by strike to find your Gamma Peaks and the Flip Zone
         strike_gex = df.groupby(["symbol", "strike"])["dollar_gex"].sum().reset_index()
-        return total_net_gex, strike_gex
+        _g2 = strike_gex.groupby('symbol')
+        min_gex = _g2.dollar_gex.min().reset_index().rename(columns={'dollar_gex': "min_gex"})
+        max_gex = _g2.dollar_gex.max().reset_index().rename(columns={'dollar_gex': "max_gex"})
+        return total_net_gex.merge(min_gex, on='symbol').merge(max_gex, on='symbol'), strike_gex
 
     def rank_put_spreads(self, dfp_leg_1, risk_limit=100_000, max_oi_ratio=0.1, leg_2_ratio_ub=0.05, buying_power=500_000):
         symlist = dfp_leg_1.symbol.unique()
