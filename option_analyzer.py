@@ -543,6 +543,28 @@ class OptionAnalyzer:
             df_dict[opt_type] = self.finalize_time_decay_df(df_res, dfcp[dfcp.type==opt_type], opt_type)
         return df_dict
 
+    def do_gex(self, df):
+        # 1. Establish the Dealer Sign Convention
+        df["gex_sign"] = np.where(df["type"] == "C", 1, -1)
+
+        # 2. Calculate individual contract Dollar Gamma per 1% move
+        # Formula: Gamma * Spot * (Spot * 1%) * 100 shares * Open Interest * Sign
+        df["dollar_gex"] = (
+            df["Gamma"]
+            * df['lastPrice']
+            * (df['lastPrice'] * 0.01)
+            * 100
+            * df["OpenInterest"]
+            * df["gex_sign"]
+        )
+
+        # 3. Aggregate to find total Net GEX
+        total_net_gex = df.groupby('symbol')["dollar_gex"].sum().reset_index()
+
+        # 4. Group by strike to find your Gamma Peaks and the Flip Zone
+        strike_gex = df.groupby(["symbol", "strike"])["dollar_gex"].sum().reset_index()
+        return total_net_gex, strike_gex
+
     def rank_put_spreads(self, dfp_leg_1, risk_limit=100_000, max_oi_ratio=0.1, leg_2_ratio_ub=0.05, buying_power=500_000):
         symlist = dfp_leg_1.symbol.unique()
         df_quotes, df_shortint, df_vola = self.get_quote_df(symlist)
