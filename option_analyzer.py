@@ -14,6 +14,7 @@ import json
 from multiprocessing import Process
 from subprocess import getoutput
 from dataclasses import dataclass, field
+from scipy.optimize import minimize_scalar
 
 @dataclass(slots=True)
 class OptionAnalyzer:
@@ -543,8 +544,9 @@ class OptionAnalyzer:
             df_dict[opt_type] = self.finalize_time_decay_df(df_res, dfcp[dfcp.type==opt_type], opt_type)
         return df_dict
 
-    def do_gex(self, df):
+    def do_gex(self, dfcp):
         # 1. Establish the Dealer Sign Convention
+        df = dfcp[dfcp.OpenInterest > 0].copy()
         df["gex_sign"] = np.where(df["type"] == "C", 1, -1)
 
         # 2. Calculate individual contract Dollar Gamma per 1% move
@@ -568,6 +570,63 @@ class OptionAnalyzer:
         min_gex = _g2.dollar_gex.min().reset_index().rename(columns={'dollar_gex': "min_gex"})
         max_gex = _g2.dollar_gex.max().reset_index().rename(columns={'dollar_gex': "max_gex"})
         return total_net_gex.merge(min_gex, on='symbol').merge(max_gex, on='symbol'), strike_gex
+
+    def plot_total_gex(self, total_net_gex, df_raw, H=800, W=1600):
+        _dt = f'{df_raw.__.load_dt.min()} {df_raw.__.load_dt.max()}'
+        _title_01 = [f'Total Net GEX {_dt}']*2
+        _title_23 = [f'Min/Max GEX {_dt}']*2
+        fig = make_subplots(rows=2, cols=2, subplot_titles=_title_01 + _title_23, shared_yaxes=False)
+        fig.update_layout(width=W, height=H)
+        etf_filter = total_net_gex.symbol.str.contains('SPY|QQQ|IWM|TLT|GLD|AAPL')
+        chart0 = px.bar(total_net_gex[ etf_filter], x='symbol', y='dollar_gex')
+        chart1 = px.bar(total_net_gex[~etf_filter], x='symbol', y='dollar_gex')
+        chart2 = px.bar(total_net_gex[ etf_filter], x='symbol', y=['max_gex', 'min_gex'])
+        chart3 = px.bar(total_net_gex[~etf_filter], x='symbol', y=['max_gex', 'min_gex'])
+        for _i, chart in enumerate([chart0, chart1, chart2, chart3]):
+            for trace in chart.data:
+                fig.add_trace(trace, row=_i//2+1, col=_i%2+1)
+        fig.show()
+
+    def plot_gex_profiles(self, strike_gex, total_net_gex, r=0.5):
+        for _row in total_net_gex.sort_values(by='min_gex').itertuples():
+            symbol = _row.symbol
+            last_price = _row.lastPrice
+            df = strike_gex[strike_gex.symbol == symbol]
+            min_gex = df.dollar_gex.min()
+            max_gex = df.dollar_gex.max()
+            df = df[(df.strike >= r * last_price) & (df.strike <= (2-r) * last_price)]
+            df_price = pd.DataFrame({'strike': [last_price]*2, 'price': [min_gex/2, max_gex/2]})
+            df = pd.concat([df, df_price])
+            px.bar(df, x='strike', y=['dollar_gex', 'price'], title=f'{symbol} Last price: {last_price}', height=1000).show()
+
+    def find_gex_flip_point(self, strike_gex, total_net_gex, symbol, chart=None, r=0.75):
+        last_price = total_net_gex[total_net_gex.symbol==symbol].lastPrice.iloc[0].item()
+        df = strike_gex[strike_gex.symbol==symbol]
+        def get_hi_lo_df(fp_offset):
+            flip_point = last_price + fp_offset
+            df_lo = df[df.strike <  flip_point].sort_values(by='strike', ascending=False).drop(columns=['symbol'])
+            df_lo = df_lo.set_index('strike').cumsum().reset_index()
+            df_hi = df[df.strike >= flip_point].sort_values(by='strike', ascending=True ).drop(columns=['symbol'])
+            df_hi = df_hi.set_index('strike').cumsum().reset_index()
+            return df_lo, df_hi
+        def objective_function(fp_offset):
+            df_lo, df_hi = get_hi_lo_df(fp_offset)
+            n_lo_odd = df_lo[df_lo.dollar_gex > 0].shape[0]        
+            n_hi_odd = df_hi[df_hi.dollar_gex < 0].shape[0]
+            return n_lo_odd + n_hi_odd
+        res = minimize_scalar(objective_function, bracket=(-0.1*last_price, 0.1*last_price), method="golden")
+        fp_offset = res.x
+        print(fp_offset, res.fun, objective_function(fp_offset))
+        flip_point = last_price + fp_offset
+        #print(fp_offset, objective_function(fp_offset))
+        df_lo, df_hi = get_hi_lo_df(fp_offset)
+        df = pd.concat([df_lo, df_hi])
+        if chart is not None:
+            dummy_v = [df.dollar_gex.min()/2, df.dollar_gex.max()/2]
+            df_price = pd.DataFrame({'strike': [last_price, last_price], 'price': dummy_v})
+            df_fp = pd.DataFrame({'strike': [flip_point, flip_point], 'flip_point': dummy_v})
+            px.bar(pd.concat([df[(df.strike >= flip_point*r) & (df.strike <= flip_point*(2-r))], df_price, df_fp]), x='strike', y=['dollar_gex', 'price', 'flip_point']).show()
+        return flip_point, last_price, df
 
     def rank_put_spreads(self, dfp_leg_1, risk_limit=100_000, max_oi_ratio=0.1, leg_2_ratio_ub=0.05, buying_power=500_000):
         symlist = dfp_leg_1.symbol.unique()
