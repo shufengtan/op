@@ -571,35 +571,39 @@ class OptionAnalyzer:
         max_gex = _g2.dollar_gex.max().reset_index().rename(columns={'dollar_gex': "max_gex"})
         return total_net_gex.merge(min_gex, on='symbol').merge(max_gex, on='symbol'), strike_gex
 
-    def plot_total_gex(self, total_net_gex, df_raw, H=800, W=1600):
-        _dt = f'{df_raw.__.load_dt.min()} {df_raw.__.load_dt.max()}'
-        _title_01 = [f'Total Net GEX {_dt}']*2
-        _title_23 = [f'Min/Max GEX {_dt}']*2
+    def plot_total_gex(self, total_net_gex, top_n=4, H=800, W=2000):
+        _title_01 = [f'Total Net GEX']*2
+        _title_23 = [f'Min/Max GEX']*2
         fig = make_subplots(rows=2, cols=2, subplot_titles=_title_01 + _title_23, shared_yaxes=False)
         fig.update_layout(width=W, height=H)
-        etf_filter = total_net_gex.symbol.str.contains('SPY|QQQ|IWM|TLT|GLD|AAPL')
-        chart0 = px.bar(total_net_gex[ etf_filter], x='symbol', y='dollar_gex')
-        chart1 = px.bar(total_net_gex[~etf_filter], x='symbol', y='dollar_gex')
-        chart2 = px.bar(total_net_gex[ etf_filter], x='symbol', y=['max_gex', 'min_gex'])
-        chart3 = px.bar(total_net_gex[~etf_filter], x='symbol', y=['max_gex', 'min_gex'])
+        _df = total_net_gex.copy()
+        _df['gex_range'] = _df['max_gex'] - _df['min_gex']
+        _df = _df.sort_values(by='gex_range', ascending=False)
+        chart0 = px.bar(_df.iloc[:top_n], x='symbol', y='dollar_gex')
+        chart1 = px.bar(_df.iloc[top_n:], x='symbol', y='dollar_gex')
+        chart2 = px.bar(_df.iloc[:top_n], x='symbol', y=['max_gex', 'min_gex'])
+        chart3 = px.bar(_df.iloc[top_n:], x='symbol', y=['max_gex', 'min_gex'])
         for _i, chart in enumerate([chart0, chart1, chart2, chart3]):
             for trace in chart.data:
                 fig.add_trace(trace, row=_i//2+1, col=_i%2+1)
         fig.show()
 
-    def plot_gex_profiles(self, strike_gex, total_net_gex, r=0.5):
+    def plot_gex_profiles(self, strike_gex, total_net_gex, R=0.3, W=1200, H=600):
         for _row in total_net_gex.sort_values(by='min_gex').itertuples():
             symbol = _row.symbol
             last_price = _row.lastPrice
             df = strike_gex[strike_gex.symbol == symbol]
+            flip_point, _, _ = self.find_gex_flip_point(strike_gex, total_net_gex, symbol)
             min_gex = df.dollar_gex.min()
             max_gex = df.dollar_gex.max()
-            df = df[(df.strike >= r * last_price) & (df.strike <= (2-r) * last_price)]
-            df_price = pd.DataFrame({'strike': [last_price]*2, 'price': [min_gex/2, max_gex/2]})
-            df = pd.concat([df, df_price])
-            px.bar(df, x='strike', y=['dollar_gex', 'price'], title=f'{symbol} Last price: {last_price}', height=1000).show()
+            df = df[(df.strike >= (1 - R) * flip_point) & (df.strike <= (1 + R) * flip_point)]
+            df_price = pd.DataFrame({'strike': [last_price]*2, 'spot_price': [min_gex, max_gex]})
+            df_flip = pd.DataFrame({'strike': [flip_point]*2, 'flip_point': [min_gex, max_gex]})
+            df = pd.concat([df, df_price, df_flip])
+            _title = f'{symbol} Spot price: {last_price} Flip point: {flip_point:.2f}'
+            px.bar(df, x='strike', y=['dollar_gex', 'spot_price', 'flip_point'], barmode='group', title=_title, width=W, height=H).show()
 
-    def find_gex_flip_point(self, strike_gex, total_net_gex, symbol, chart=None, r=0.75):
+    def find_gex_flip_point(self, strike_gex, total_net_gex, symbol, chart=None, R=0.3):
         last_price = total_net_gex[total_net_gex.symbol==symbol].lastPrice.iloc[0].item()
         df = strike_gex[strike_gex.symbol==symbol]
         def get_hi_lo_df(fp_offset):
@@ -616,7 +620,7 @@ class OptionAnalyzer:
             return n_lo_odd + n_hi_odd
         res = minimize_scalar(objective_function, bracket=(-0.1*last_price, 0.1*last_price), method="golden")
         fp_offset = res.x
-        print(fp_offset, res.fun, objective_function(fp_offset))
+        print(f'{symbol} fp_offset: {fp_offset:.2f}, obj: {res.fun} (should be 0)')
         flip_point = last_price + fp_offset
         #print(fp_offset, objective_function(fp_offset))
         df_lo, df_hi = get_hi_lo_df(fp_offset)
@@ -625,7 +629,7 @@ class OptionAnalyzer:
             dummy_v = [df.dollar_gex.min()/2, df.dollar_gex.max()/2]
             df_price = pd.DataFrame({'strike': [last_price, last_price], 'price': dummy_v})
             df_fp = pd.DataFrame({'strike': [flip_point, flip_point], 'flip_point': dummy_v})
-            px.bar(pd.concat([df[(df.strike >= flip_point*r) & (df.strike <= flip_point*(2-r))], df_price, df_fp]), x='strike', y=['dollar_gex', 'price', 'flip_point']).show()
+            px.bar(pd.concat([df[(df.strike >= flip_point*(1 - R)) & (df.strike <= flip_point*(1 + R))], df_price, df_fp]), x='strike', y=['dollar_gex', 'price', 'flip_point']).show()
         return flip_point, last_price, df
 
     def rank_put_spreads(self, dfp_leg_1, risk_limit=100_000, max_oi_ratio=0.1, leg_2_ratio_ub=0.05, buying_power=500_000):
@@ -1072,10 +1076,14 @@ def main(sys_argv):
     data_ts = df_ts.load_dt.max()
     data_dir = os.path.expanduser('~/lab/data')
     print('df_raw.shape:', df_raw.shape, 'data_ts:', data_ts.strftime('%F %T'))
-    df_earning = self.count_days_from_earning_reports(df_quotes)
-    print('Days to E:', self.d2e)
+    csv_file = os.path.join(data_dir, data_ts.strftime(f'both~{hostname}~%F_%T.csv'))
+    if not os.path.exists(csv_file) or os.path.getsize(csv_file) == 0:
+        dfcp = self.concat_put_call_options(df_raw).drop(columns=['TimeValue', 'IntrinsicValue', 'Rho', 'dte_cluster', 'cluster'])
+        dfcp.to_csv(csv_file, index=None)
+    #df_earning = self.count_days_from_earning_reports(df_quotes)
+    #print('Days to E:', self.d2e)
     for opt_type in ['put', 'call']:
-        csv_file = os.path.join(app_dir, data_ts.strftime(f'{data_dir}/{opt_type}~{hostname}~%F_%T.csv'))
+        csv_file = os.path.join(data_dir, data_ts.strftime(f'{opt_type}~{hostname}~%F_%T.csv'))
         if os.path.exists(csv_file) and os.path.getsize(csv_file) > 0:
             print(f'{csv_file} already exists: {os.path.getsize(csv_file)} bytes')
             continue
