@@ -596,7 +596,7 @@ class OptionAnalyzer:
             flip_point, _, _ = self.find_gex_flip_point(strike_gex, total_net_gex, symbol)
             min_gex = df.dollar_gex.min()
             max_gex = df.dollar_gex.max()
-            df = df[(df.strike >= (1 - R) * flip_point) & (df.strike <= (1 + R) * flip_point)]
+            df = df[(df.strike >= (1 - R) * min(flip_point, last_price)) & (df.strike <= (1 + R) * max(flip_point, last_price))]
             df_price = pd.DataFrame({'strike': [last_price]*2, 'spot_price': [min_gex, max_gex]})
             df_flip = pd.DataFrame({'strike': [flip_point]*2, 'flip_point': [min_gex, max_gex]})
             df = pd.concat([df, df_price, df_flip])
