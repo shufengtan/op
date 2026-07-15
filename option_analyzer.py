@@ -589,7 +589,7 @@ class OptionAnalyzer:
                 fig.add_trace(trace, row=_i//2+1, col=_i%2+1)
         fig.show()
 
-    def plot_gex_profiles(self, strike_gex, total_net_gex, R=0.3, W=1200, H=600):
+    def plot_gex_profiles(self, strike_gex, total_net_gex, R=0.05, W=1200, H=600):
         put_walls = {}
         call_walls = {}
         for _row in total_net_gex.sort_values(by='min_gex').itertuples():
@@ -601,7 +601,7 @@ class OptionAnalyzer:
             max_gex = df.dollar_gex.max()
             put_walls[symbol] = df.loc[df.dollar_gex.idxmin()].strike.item()
             call_walls[symbol] = df.loc[df.dollar_gex.idxmax()].strike.item()
-            df = df[(df.strike >= (1 - R) * min(flip_point, last_price)) & (df.strike <= (1 + R) * max(flip_point, last_price))]
+            df = df[(df.strike >= (1 - R) * min(flip_point, last_price, put_walls[symbol])) & (df.strike <= (1 + R) * max(flip_point, last_price, call_walls[symbol]))]
             df_price = pd.DataFrame({'strike': [last_price]*2, 'spot_price': [min_gex, max_gex]})
             df_flip = pd.DataFrame({'strike': [flip_point]*2, 'flip_point': [min_gex, max_gex]})
             df = pd.concat([df, df_price, df_flip])
