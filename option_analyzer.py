@@ -572,23 +572,26 @@ class OptionAnalyzer:
         return total_net_gex.merge(min_gex, on='symbol').merge(max_gex, on='symbol'), strike_gex
 
     def plot_total_gex(self, total_net_gex, top_n=4, H=800, W=2000):
-        _title_01 = [f'Total Net GEX']*2
-        _title_23 = [f'Min/Max GEX']*2
-        fig = make_subplots(rows=2, cols=2, subplot_titles=_title_01 + _title_23, shared_yaxes=False)
+        titles = ['Put Walls']*2 + ['Call Walls']*2 + ['Net GEX']*2
+        fig = make_subplots(rows=3, cols=2, subplot_titles=titles, shared_yaxes=False)
         fig.update_layout(width=W, height=H)
-        _df = total_net_gex.copy()
-        _df['gex_range'] = _df['max_gex'] - _df['min_gex']
-        _df = _df.sort_values(by='gex_range', ascending=False)
-        chart0 = px.bar(_df.iloc[:top_n], x='symbol', y='dollar_gex')
-        chart1 = px.bar(_df.iloc[top_n:], x='symbol', y='dollar_gex')
-        chart2 = px.bar(_df.iloc[:top_n], x='symbol', y=['max_gex', 'min_gex'])
-        chart3 = px.bar(_df.iloc[top_n:], x='symbol', y=['max_gex', 'min_gex'])
-        for _i, chart in enumerate([chart0, chart1, chart2, chart3]):
+        df_put_wall = total_net_gex.sort_values(by='min_gex', ascending=True)
+        df_call_wall = total_net_gex.sort_values(by='max_gex', ascending=False)
+        df_net_gex = total_net_gex.sort_values(by='dollar_gex', ascending=False)
+        chart0 = px.bar(df_put_wall.iloc[:top_n], x='symbol', y='min_gex')
+        chart1 = px.bar(df_put_wall.iloc[top_n:], x='symbol', y='min_gex')
+        chart2 = px.bar(df_call_wall.iloc[:top_n], x='symbol', y='max_gex')
+        chart3 = px.bar(df_call_wall.iloc[top_n:], x='symbol', y='max_gex')
+        chart4 = px.bar(df_net_gex.iloc[:top_n], x='symbol', y='dollar_gex')
+        chart5 = px.bar(df_net_gex.iloc[top_n:], x='symbol', y='dollar_gex')
+        for _i, chart in enumerate([chart0, chart1, chart2, chart3, chart4, chart5]):
             for trace in chart.data:
                 fig.add_trace(trace, row=_i//2+1, col=_i%2+1)
         fig.show()
 
     def plot_gex_profiles(self, strike_gex, total_net_gex, R=0.3, W=1200, H=600):
+        put_walls = {}
+        call_walls = {}
         for _row in total_net_gex.sort_values(by='min_gex').itertuples():
             symbol = _row.symbol
             last_price = _row.lastPrice
@@ -596,12 +599,15 @@ class OptionAnalyzer:
             flip_point, _, _ = self.find_gex_flip_point(strike_gex, total_net_gex, symbol)
             min_gex = df.dollar_gex.min()
             max_gex = df.dollar_gex.max()
+            put_walls[symbol] = df.loc[df.dollar_gex.idxmin()].strike.item()
+            call_walls[symbol] = df.loc[df.dollar_gex.idxmax()].strike.item()
             df = df[(df.strike >= (1 - R) * min(flip_point, last_price)) & (df.strike <= (1 + R) * max(flip_point, last_price))]
             df_price = pd.DataFrame({'strike': [last_price]*2, 'spot_price': [min_gex, max_gex]})
             df_flip = pd.DataFrame({'strike': [flip_point]*2, 'flip_point': [min_gex, max_gex]})
             df = pd.concat([df, df_price, df_flip])
-            _title = f'{symbol} Spot price: {last_price} Flip point: {flip_point:.2f}'
+            _title = f'{symbol} Spot price: {last_price} Flip point: {flip_point:.2f} Put wall: {put_walls[symbol]} Call wall: {call_walls[symbol]}'
             px.bar(df, x='strike', y=['dollar_gex', 'spot_price', 'flip_point'], barmode='group', title=_title, width=W, height=H).show()
+        return put_walls, call_walls
 
     def find_gex_flip_point(self, strike_gex, total_net_gex, symbol, chart=None, R=0.3):
         last_price = total_net_gex[total_net_gex.symbol==symbol].lastPrice.iloc[0].item()
@@ -631,6 +637,66 @@ class OptionAnalyzer:
             df_fp = pd.DataFrame({'strike': [flip_point, flip_point], 'flip_point': dummy_v})
             px.bar(pd.concat([df[(df.strike >= flip_point*(1 - R)) & (df.strike <= flip_point*(1 + R))], df_price, df_fp]), x='strike', y=['dollar_gex', 'price', 'flip_point']).show()
         return flip_point, last_price, df
+
+    def calculate_iv_skew(self, df):
+        """
+        Calculates 25-Delta and 10-Delta Volatility Skew for each Symbol and Expiration.
+
+        Expected DataFrame Columns:
+        - 'symbol': Stock ticker
+        - 'expDt': Option expiration date (string or datetime)
+        - 'type': 'C' or 'P'
+        - 'Delta': Option delta (positive for calls, negative for puts)
+        - 'ImpVola': Implied Volatility (as a decimal, e.g., 0.245 for 24.5%)
+        """
+        # 1. Standardize delta signs (ensure puts are negative, calls are positive)
+        df = df.copy()
+        df['Delta'] = np.where(df['type'] == 'P', -df['Delta'].abs(), df['Delta'].abs())
+
+        results = []
+
+        # 2. Group by Symbol and Expiration
+        grouped = df.groupby(['symbol', 'expDt'])
+
+        for (symbol, expiration), group in grouped:
+            # Split into calls and puts for this specific chain
+            calls = group[group['type'] == 'C']
+            puts = group[group['type'] == 'P']
+
+            # We need both calls and puts to calculate a skew
+            if calls.empty or puts.empty:
+                continue
+
+            # Helper to find the IV of the contract closest to a target delta
+            def get_closest_iv(options_df, target_delta):
+                # Find row with the minimum absolute difference to target delta
+                idx = (options_df['Delta'] - target_delta).abs().idxmin()
+                return options_df.loc[idx, 'ImpVola']
+
+            try:
+                # Retrieve IVs for 25-Delta and 10-Delta
+                iv_25_put = get_closest_iv(puts, -0.25)
+                iv_25_call = get_closest_iv(calls, 0.25)
+                iv_10_put = get_closest_iv(puts, -0.10)
+                iv_10_call = get_closest_iv(calls, 0.10)
+                # Calculate Skews (Put IV - Call IV)
+                skew_25 = iv_25_put - iv_25_call
+                skew_10 = iv_10_put - iv_10_call
+
+                results.append({
+                    'symbol': symbol,
+                    'expDt': expiration,
+                    '25_put_iv': iv_25_put,
+                    '25_call_iv': iv_25_call,
+                    '25_delta_skew': skew_25,
+                    '10_put_iv': iv_10_put,
+                    '10_call_iv': iv_10_call,
+                    '10_delta_skew': skew_10
+                })
+            except Exception as e:
+                # Handle cases where finding a target delta fails (e.g., empty slices)
+                continue
+        return pd.DataFrame(results)
 
     def rank_put_spreads(self, dfp_leg_1, risk_limit=100_000, max_oi_ratio=0.1, leg_2_ratio_ub=0.05, buying_power=500_000):
         symlist = dfp_leg_1.symbol.unique()
