@@ -6,7 +6,7 @@ from Cryptodome.Cipher import AES
 from Cryptodome.Protocol.KDF import PBKDF2
 from Cryptodome.Hash import SHA1
 
-'AP171348_HEADER_APP_SERVICE_COOKIE', 'analytics_id', 'bm_ss', 'mboxEdgeCluster'
+{'session_sctx', '_neo.csrf', 'AP179893-XSRF-TOKEN', 'XSRF-TOKEN', 'AP179893_neo.csrf', 'AP182051-XSRF-TOKEN', '_pr000132-mutual-fund-trade-ticket.csrf'}
 
 fid_cookie_spec = {
     '_cs_c': 1,
@@ -16,26 +16,11 @@ fid_cookie_spec = {
     'portsum_.csrf': 24,
     '_brkg.ap122489.equitytradeticket.csrf': 24,
     '_tradecontainer.csrf': 24,
-    '_upeapp-neo.csrf': 24,
-    '_fvl_neo.csrf': 24,
-    'ap180806_neo.csrf': 24,
     '_ap126216-pwe.csrf': 24,
-    '_neo.csrf': 24,
-    '_neo_ap182051.csrf': 24,
-    '_pr000132-mutual-fund-trade-ticket.csrf': 24,
-    '_neo_ap185145.csrf': 24,
-    '_pr110448-quick-quote.csrf': 24,
-    '_ap130058-res-exp.csrf': 24,
-    'AP179893_neo.csrf': 24,
     '_ga': 27,
     '_ga_GL9JN8SMCE': 47,
     '_gcl_au': 25,
-    '_.csrf': 24,
-    '_perfaa_neo.csrf': 24,
-    'PERFAA-XSRF-TOKEN': 36,
-    '_uetsid': 32,
     '_uetvid': 32,
-    'dmt_x': 32,
     'FC': 409,
     'MC': 159,
     'PIT': 577,
@@ -44,14 +29,8 @@ fid_cookie_spec = {
     'RtEntC': 162,
     'SC': 270,
     'PORTSUM_XSRF-TOKEN': 36,
-    'UPEAPP-XSRF-TOKEN': 36,
-    'FVL-XSRF-TOKEN': 36,
     'dmt_d': 3,
-    'ap180806-XSRF-TOKEN': 36,
-    'session_sctx': 32,
-    'XSRF-TOKEN': 36,
     '_cs_ex': 10,
-    'bm_mi': 399,
     'cvi': 152,
     'AMCV_EDCF01AC512D2B770A490D4C%40AdobeOrg': 286,
     'OptanonConsent': 251,
@@ -64,17 +43,12 @@ fid_cookie_spec = {
     'bm_lso': 555,
     'bm_so': 541,
     'QSI_HistorySession': 655,
-    'AP185145-XSRF-TOKEN': 36,
     'bm_s': 1000,
-    'AP179893-XSRF-TOKEN': 36,
-    'AP182051-XSRF-TOKEN': 36,
     'ATC': 43,
     'ATT': 10,
     '_abck': 1228,
-    '_dd_s': 136,
     '_dd_s_v2': 127,
     'ajs_anonymous_id': 36,
-    'ajs_user_id': 34,
     'bm_sv': 299,
     'dmt_g': 2,
     'dmt_t': 2,
@@ -144,17 +118,8 @@ def get_fid_cookies(rows):
     unknown = s1 - s0
     print('Cookie spec:', len(s0), 'names, found:', len(s0.intersection(s1)))
     print('Missing:', missing, 'Unknown:', unknown)
-    defects = len(missing)
-    for name in sorted(s0.intersection(s1)):
-        if fid_cookie_spec[name] != name2vlen[name]:
-            if name == 'QSI_HistorySession' and fid_cookie_spec[name] - name2vlen[name] <= 29:
-                continue
-            if name == 's_pers' and fid_cookie_spec[name] - name2vlen[name] <= 10:
-                continue
-            print(name, fid_cookie_spec[name], 'vs', name2vlen[name])
-            defects += 1
-    if defects >= 5:
-        print('Unusable cookie:', defects, 'defects')
+    if len(missing) >= 2:
+        print('Unusable cookie:', len(missing), 'names missing')
         return []
     return nv_pairs
 
