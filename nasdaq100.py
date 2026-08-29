@@ -6,7 +6,7 @@ import io
 
 def fetch_nasdaq_100():
     headers = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:145.0) Gecko/20100101 Firefox/145.0'}
-    resp = requests.get("https://en.wikipedia.org/wiki/NASDAQ-100", headers=headers)
+    resp = requests.get("https://en.wikipedia.org/wiki/List_of_NASDAQ-100_companies", headers=headers)
     try:
         tables = pd.read_html(io.StringIO(resp.text))
         for table in tables:

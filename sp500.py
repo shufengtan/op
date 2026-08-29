@@ -9,8 +9,8 @@ def get_sp500_symbols(url='https://en.wikipedia.org/wiki/List_of_S%26P_500_compa
     soup = bs4.BeautifulSoup(response.text, 'html.parser')
     table = soup.find('table')
     lol = []
-    for row in table.findAll('tr'):
-        all_td = row.findAll('td')
+    for row in table.find_all('tr'):
+        all_td = row.find_all('td')
         if len(all_td) >= 3:
             ticker = all_td[0].text.strip().replace('Template:', '')
             sector = all_td[2].text.strip()
