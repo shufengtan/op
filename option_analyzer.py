@@ -698,6 +698,17 @@ class OptionAnalyzer:
                 continue
         return pd.DataFrame(results)
 
+    def list_symbols_in_data_file(self, csv_file):
+        symlist = []
+        with open(csv_file) as fo:
+            for line in fo:
+                if ',' not in line or  line[:7] == 'symbol,':
+                    continue
+                symbol = line.split(',')[0]
+                if symbol not in symlist:
+                    symlist.append(symbol)
+        return symlist
+
     def rank_put_spreads(self, dfp_leg_1, risk_limit=100_000, max_oi_ratio=0.1, leg_2_ratio_ub=0.05, buying_power=500_000):
         symlist = dfp_leg_1.symbol.unique()
         df_quotes, df_shortint, df_vola = self.get_quote_df(symlist)
