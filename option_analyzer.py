@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -1099,15 +1101,12 @@ def main(sys_argv):
     import socket
     hostname = socket.gethostname()
     from market_data_timer import wait_till_market_open, wait_to_open_symbol_file
-    if len(sys_argv) == 1:
-        sys.stderr.write(f'Usage: python {sys_argv[0]} symlist_file\n')
-        return
     log_name = os.path.basename(sys_argv[0]).replace('.py', '')
     log_file = os.path.join(os.path.expanduser('~/logs/'),  log_name + '.log')
     #print('Log file:', log_file)
     logger = get_rotating_logger(log_name, log_file)
-    symlist_file = sys.argv[1]
-    app_dir = os.path.dirname(symlist_file)
+    symlist_file = f'symbol-{hostname}.txt'
+    app_dir = os.path.expanduser('~/lab')
     quotes_dir = os.path.join(app_dir, 'quotes')
     chain_dir = os.path.join(app_dir, 'chain')
     #print(symlist_file, chain_dir, quotes_dir)
@@ -1174,6 +1173,5 @@ def main(sys_argv):
 if __name__ == '__main__':
     main(sys.argv)
     '''This script can be run in a loop:
-    cd ~/lab
-    while true; do sync; python option_analyzer.py symbols-$(hostname).txt;sleep 1; done
+    cd ~/lab; while true; do sync; python option_analyzer.py; sleep 1; done
     '''
