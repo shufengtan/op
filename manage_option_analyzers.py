@@ -1,3 +1,5 @@
+#!/home/ana/conda/bin/python3
+
 import concurrent.futures
 from pathlib import Path
 import signal
@@ -10,7 +12,7 @@ from typing import Dict, List, Tuple
 MAX_WORKERS: int = 10
 LOG_DIR: Path = Path.home() / "logs"
 ACTIVE_PROCESSES: Dict[str, subprocess.Popen] = {}
-ACTION = ""
+ACTION = "check"
 
 
 def run_ssh_command(host: str, script_body: str, log_dir: Path) -> Tuple[str, int, Path]:
@@ -100,10 +102,12 @@ def run_parallel(hosts: List[str], script: str) -> None:
         for future in concurrent.futures.as_completed(future_to_host):
             try:
                 host, return_code, log_path = future.result()
-                status = f"EXITED with return code {return_code}"
-                print(f"[{host}] -> {status}, Log: {log_path}:")
+                status = f"return code: {return_code}"
+                print(f"[{host}] -> {status}, {log_path}:")
                 with open(log_path) as fo:
-                    log_lines = [_ for _ in fo][-10:]
+                    log_lines = [_ for _ in fo]
+                    if ACTION == 'start':
+                        log_lines = log_lines[-10:]
                     print(''.join(log_lines))
             except Exception as e:
                 print(f"Execution failed: {e}")
@@ -111,15 +115,16 @@ def run_parallel(hosts: List[str], script: str) -> None:
 
 if __name__ == "__main__":
     import sys
-    if 'run' in sys.argv[0]:
-        command = "cd lab; while true; do sync; python option_analyzer.py symbols-$(hostname).txt;sleep 1; done"
-        ACTION = 'run'
+    ps_cmd = "ps -fu s |grep 'python option_analyzer' |grep -v grep"
+    if 'start' in sys.argv[0]:
+        command = f"cd ~/lab; while true; do sync; {ps_cmd} || python option_analyzer.py; sleep 1; done"
+        ACTION = 'start'
     elif 'check' in sys.argv[0]:
-        command = "ps -fu s |grep option_analyzer|grep -v grep"
+        command = ps_cmd
         ACTION = 'check'
-    elif 'kill' in sys.argv[0]:
-        command = "ps -fu s |grep 'python option_analyzer'|grep -v grep|awk '{print $2}' | xargs kill"
-        ACTION = 'kill'
+    elif 'stop' in sys.argv[0]:
+        command = ps_cmd + " |awk '{print $2" + '"\\n"' + "$3}' |sort -u |xargs kill"
+        ACTION = 'stop'
     else:
         sys.stderr.write(f"Invalid command: {sys.argv[0]}\n")
         sys.exit(1)
