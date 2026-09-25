@@ -1011,7 +1011,7 @@ class ParallelOptionCalculator:
                 break
             self.kill_zombies()
             time.sleep(0.1)
-        print(f'Completed {len(symlist)} symbols in %.1f seconds' % (time.time() - start_time))
+        print(f'Completed {opt_type} options for {len(symlist)} symbols in %.1f seconds' % (time.time() - start_time))
         return self.get_output_files(symlist, start_time)
 
     def assemble_time_decay_df(self, output_files):
