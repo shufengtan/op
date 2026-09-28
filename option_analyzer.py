@@ -13,7 +13,7 @@ import logging
 import time
 from datetime import datetime, timedelta
 import json
-from multiprocessing import Process
+from multiprocessing import Process, set_start_method
 from subprocess import getoutput
 from dataclasses import dataclass, field
 from scipy.optimize import minimize_scalar
@@ -991,7 +991,7 @@ class ParallelOptionCalculator:
     def do_all_theta_curves(self, symlist):
         df = self.df
         opt_type = self.opt_type
-        proc_dict = self.proc_dict
+        _proc_dict = {}
         start_time = time.time()
         for symbol in symlist:
             df_sym = df[(df.symbol==symbol)]
@@ -1002,9 +1002,13 @@ class ParallelOptionCalculator:
             t0 = time.perf_counter()
             for strike in strike_list:
                 proc = Process(target=self.do_theta_curves, args=(symbol, strike, df_sym))
-                proc_dict[(symbol, strike)] = proc
+                _proc_dict[(symbol, strike)] = proc
                 proc.start()
             print(symbol, len(strike_list), opt_type, 'theta curves processed in %.1f seconds' % (time.perf_counter() - t0))
+
+        for k, v in _proc_dict.items():
+            self.proc_dict[k] = v
+
         for i in range(1, 100):
             if self.count_zombies() == 0:
                 self.logger.debug(f'zombie count = 0 after {i} kills')
@@ -1105,11 +1109,11 @@ def main(sys_argv):
     log_file = os.path.join(os.path.expanduser('~/logs/'),  log_name + '.log')
     #print('Log file:', log_file)
     logger = get_rotating_logger(log_name, log_file)
-    symlist_file = f'symbol-{hostname}.txt'
+    symlist_file = f'symbols-{hostname}.txt'
     app_dir = os.path.expanduser('~/lab')
     quotes_dir = os.path.join(app_dir, 'quotes')
     chain_dir = os.path.join(app_dir, 'chain')
-    #print(symlist_file, chain_dir, quotes_dir)
+    print(symlist_file, chain_dir, quotes_dir)
     self = OptionAnalyzer(quotes_dir, chain_dir, logger=logger)
     wait_till_market_open(logger)
     wait_to_open_symbol_file(symlist_file)
@@ -1171,6 +1175,7 @@ def main(sys_argv):
         print(csv_file, df_type.shape, os.path.getsize(csv_file), 'bytes')
     
 if __name__ == '__main__':
+    set_start_method('fork', force=True)
     main(sys.argv)
     '''This script can be run in a loop:
     cd ~/lab; while true; do sync; python option_analyzer.py; sleep 1; done
