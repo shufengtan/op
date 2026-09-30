@@ -6,12 +6,9 @@ from Cryptodome.Cipher import AES
 from Cryptodome.Protocol.KDF import PBKDF2
 from Cryptodome.Hash import SHA1
 
-{'session_sctx', '_neo.csrf', 'AP179893-XSRF-TOKEN', 'XSRF-TOKEN', 'AP179893_neo.csrf', 'AP182051-XSRF-TOKEN', '_pr000132-mutual-fund-trade-ticket.csrf'}
-
 fid_cookie_spec = {
     '_cs_c': 1,
     '_svsid': 32,
-    '_ldvid': 36,
     'AMCVS_EDCF01AC512D2B770A490D4C%40AdobeOrg': 1,
     'portsum_.csrf': 24,
     '_brkg.ap122489.equitytradeticket.csrf': 24,
@@ -30,7 +27,6 @@ fid_cookie_spec = {
     'SC': 270,
     'PORTSUM_XSRF-TOKEN': 36,
     'dmt_d': 3,
-    '_cs_ex': 10,
     'cvi': 152,
     'AMCV_EDCF01AC512D2B770A490D4C%40AdobeOrg': 286,
     'OptanonConsent': 251,
@@ -47,7 +43,6 @@ fid_cookie_spec = {
     'ATC': 43,
     'ATT': 10,
     '_abck': 1228,
-    '_dd_s_v2': 127,
     'ajs_anonymous_id': 36,
     'bm_sv': 299,
     'dmt_g': 2,
@@ -123,26 +118,26 @@ def get_fid_cookies(rows):
         return []
     return nv_pairs
 
-def save_cookie_files(cookie_nv_pairs):
+def save_cookie_files(cookie_nv_pairs, data_dir):
     if len(cookie_nv_pairs) > 0:
-        cookie_list_file = os.path.expanduser('~/data/cookie.list')
+        cookie_list_file = os.path.expanduser('~s/data/cookie.list')
         with open(cookie_list_file, 'w') as wfo:
             wfo.write('\n'.join(sorted(cookie_nv_pairs)) + '\n')
-        cookie_txt_file = os.path.expanduser('~/data/cookie.txt')
+        cookie_txt_file = os.path.expanduser('~s/data/cookie.txt')
         with open(cookie_txt_file, 'w') as wfo:
             wfo.write('; '.join(cookie_nv_pairs))
         return cookie_txt_file
 
-def main(dest_dir):
+def main(sys_argv):
     import time
-    db_path = os.path.expanduser("~/snap/chromium/common/chromium/Default/Cookies")
+    db_path, data_dir, dest_dir = sys_argv[1:4]
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     cursor = conn.cursor()
     check_assumptins(cursor)
     rows = fetch_fid_cookie_rows(cursor)
     validate_fid_cookie_rows(rows)
     nv_pairs = get_fid_cookies(rows)
-    cookie_txt_file = save_cookie_files(nv_pairs)
+    cookie_txt_file = save_cookie_files(nv_pairs, data_dir)
     if not (cookie_txt_file and os.path.exists(cookie_txt_file) and os.path.getsize(cookie_txt_file) > 1000):
         print('Failedd to extract cookies')
         return
@@ -155,4 +150,4 @@ def main(dest_dir):
 
 if __name__ == '__main__':
     import sys
-    main(sys.argv[1])
+    main(sys.argv)
