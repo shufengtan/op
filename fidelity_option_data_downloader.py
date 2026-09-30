@@ -144,11 +144,12 @@ class FidelityOptionDataDownloader(object):
 
     def get_option_data(self, symbol, strikes, expiration_dates, settlement_types, save_dir):
         log = self.logger
+        t0 = time.perf_counter()
         _symbol = symbol.replace('-', '/')
         _url = self.api_url + '/slo-chain/v1?adjustedOptionsData=true'
         _url += '&symbol=' + _symbol
         _url += f'&strikes={strikes}'
-        batch_size = 7
+        batch_size = 8
         calls_n_puts = []
         for di in range(0, len(expiration_dates), batch_size):
             _exp_dt = expiration_dates[di:di+batch_size]
@@ -173,6 +174,7 @@ class FidelityOptionDataDownloader(object):
             chain_file = os.path.join(save_dir, symbol.replace('/', '-'))
             with open(chain_file, 'w') as wfo:
                 json.dump({'callsAndPuts': calls_n_puts}, wfo)
+            log.info(f'get_option_data {_symbol} received {len(calls_n_puts)} options in {(time.perf_counter() - t0):.1f} seconds.')
             return calls_n_puts
 
     def get_slo_chain_data(self, symbol, strikes='All'):
@@ -312,6 +314,9 @@ def main(batch_size=5):
             continue
         symlist = wait_to_open_symbol_file(symbol_file)
         wait_till_market_open(logger)
+        if not ocd.get_option_expiration_dates('QQQ'):
+            logger.warning(f'get_option_expiration_dates(QQQ) failed, bailing out.')
+            sys.exit(1)
         logger.info(f'BEGIN downloading {len(symlist)} symbols')
         dl_count = ocd.download_option_chain(symlist, batch_size=batch_size, rps=5)
         if dl_count == 0:
