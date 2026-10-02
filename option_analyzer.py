@@ -225,7 +225,7 @@ class OptionAnalyzer:
         ignored_cols = ['Change', 'Last', 'BidSize', 'AskSize']
         df = pd.concat([df_raw._, df_raw[opt_type], df_raw.__.loc[:, ['expDt']]], axis=1)
         df['mid'] = (df.Bid + df.Ask)/2
-        df['pctSpread'] = 100*(df.Ask - df.Bid)/df.mid
+        df['pctSpread'] = (100*(df.Ask - df.Bid)/df.mid).round(2)
         df['expDt'] = pd.to_datetime(df.expDt, format='mixed').dt.strftime('%F')
         df = df.rename(columns={'ImpliedVolatility': 'ImpVola'})
         ignored_cols = [c for c in df.columns if c in ignored_cols]
@@ -473,14 +473,14 @@ class OptionAnalyzer:
         # Fidelity charges $0.65 per option at STO, 0 at BTC if premium < 1
         fidelity_fee = 0.0065
         dte_profit = df_res.Bid - fidelity_fee # Use bid price so we don't have to offset spread
-        df_res['dteProfit'] = dte_profit / (df_res.strike if opt_type == 'P' else df_res.lastPrice)*100/df_res.dte*365
+        df_res['dteProfit'] = (dte_profit / (df_res.strike if opt_type == 'P' else df_res.lastPrice)*100/df_res.dte*365).round(1)
         dth_profit = df_res.Bid/2 - df_res.mid.apply(lambda x: fidelity_fee if x <= 1.3 else 2*fidelity_fee)
-        df_res['dthProfit'] = dth_profit / (df_res.strike if opt_type == 'P' else df_res.lastPrice)*100/np.ceil(df_res.dth)*365
+        df_res['dthProfit'] = (dth_profit / (df_res.strike if opt_type == 'P' else df_res.lastPrice)*100/np.ceil(df_res.dth)*365).round(1)
         df_res['E'] = df_res.symbol.apply(self.d2e.get)
         if opt_type == 'P':
-            df_res['dthStrikeMargin'] = 100 * (df_res.lastPrice*(1 - df_res.ImpVola * np.sqrt(df_res.dth/365)) - df_res.strike + df_res.mid) / df_res.strike
+            df_res['dthStrikeMargin'] = (100 * (df_res.lastPrice*(1 - df_res.ImpVola * np.sqrt(df_res.dth/365)) - df_res.strike + df_res.mid) / df_res.strike).round(2)
         elif opt_type == 'C':
-            df_res['dthStrikeMargin'] = 100 * (df_res.strike - df_res.lastPrice*(1 + df_res.ImpVola * np.sqrt(df_res.dth/365)) + df_res.mid) / df_res.strike
+            df_res['dthStrikeMargin'] = (100 * (df_res.strike - df_res.lastPrice*(1 + df_res.ImpVola * np.sqrt(df_res.dth/365)) + df_res.mid) / df_res.strike).round(2)
         reordered_cols = [c for c in df_res.columns if c[:2] != 'dt'] + [c for c in df_res.columns if c[:2] == 'dt']
         return df_res[reordered_cols]
 
@@ -546,7 +546,7 @@ class OptionAnalyzer:
             df_dict[opt_type] = self.finalize_time_decay_df(df_res, dfcp[dfcp.type==opt_type], opt_type)
         return df_dict
 
-    def do_gex(self, dfcp):
+    def do_gex(self, dfcp, df_extra):
         # 1. Establish the Dealer Sign Convention
         df = dfcp[dfcp.OpenInterest > 0].copy()
         df["gex_sign"] = np.where(df["type"] == "C", 1, -1)
@@ -564,55 +564,74 @@ class OptionAnalyzer:
 
         # 3. Aggregate to find total Net GEX
         _g = df.groupby('symbol')
-        total_net_gex = _g["lastPrice"].first().reset_index().merge(_g["dollar_gex"].sum().reset_index(), on='symbol')
+        df_net_gex = pd.DataFrame(_g["lastPrice"].first()).join(pd.DataFrame(_g["dollar_gex"].sum()))
 
         # 4. Group by strike to find your Gamma Peaks and the Flip Zone
         strike_gex = df.groupby(["symbol", "strike"])["dollar_gex"].sum().reset_index()
-        _g2 = strike_gex.groupby('symbol')
-        min_gex = _g2.dollar_gex.min().reset_index().rename(columns={'dollar_gex': "min_gex"})
-        max_gex = _g2.dollar_gex.max().reset_index().rename(columns={'dollar_gex': "max_gex"})
-        return total_net_gex.merge(min_gex, on='symbol').merge(max_gex, on='symbol'), strike_gex
 
-    def plot_total_gex(self, total_net_gex, top_n=4, H=800, W=2000):
-        titles = ['Put Walls']*2 + ['Call Walls']*2 + ['Net GEX']*2
+        strike_gex['abs_gex'] = np.abs(strike_gex.dollar_gex)
+        df_abs_gex_sum = pd.DataFrame(strike_gex.groupby('symbol').abs_gex.sum()).rename(columns={'abs_gex': 'abs_gex_sum'})
+
+        _g2 = strike_gex.groupby('symbol')
+        min_gex = pd.DataFrame(_g2.dollar_gex.min()).rename(columns={'dollar_gex': "min_gex"})
+        max_gex = pd.DataFrame(_g2.dollar_gex.max()).rename(columns={'dollar_gex': "max_gex"})
+        df_walls = df_net_gex.join(min_gex).join(max_gex).join(df_extra).join(df_abs_gex_sum)
+
+        if 'ADV' in df_walls.columns:
+            df_walls['put_wall_by_adv']  = df_walls.min_gex / df_walls.ADV / df_walls.lastPrice
+            df_walls['call_wall_by_adv'] = df_walls.max_gex / df_walls.ADV / df_walls.lastPrice
+
+        if 'sharesOutstanding' in df_walls.columns:
+            df_walls['put_wall_by_market_cap']  = df_walls.min_gex / df_walls.sharesOutstanding / df_walls.lastPrice
+            df_walls['call_wall_by_market_cap'] = df_walls.max_gex / df_walls.sharesOutstanding / df_walls.lastPrice
+
+        df_walls['put_wall_concentration']  = df_walls.min_gex / df_walls.abs_gex_sum
+        df_walls['call_wall_concentration'] = df_walls.max_gex / df_walls.abs_gex_sum
+
+        return df_walls.reset_index(), strike_gex
+
+    def plot_gex_walls(self, df_walls, by='by_adv', top_n=4, H=800, W=2000):
+        titles = ['Put Walls by ADV and Market Cap', 'Put Walls by Concentration'] + ['Call Walls by ADV and Market Cap', 'Call Walls by Concentration'] + ['Net GEX']*2
         fig = make_subplots(rows=3, cols=2, subplot_titles=titles, shared_yaxes=False)
         fig.update_layout(width=W, height=H)
-        df_put_wall = total_net_gex.sort_values(by='min_gex', ascending=True)
-        df_call_wall = total_net_gex.sort_values(by='max_gex', ascending=False)
-        df_net_gex = total_net_gex.sort_values(by='dollar_gex', ascending=False)
-        chart0 = px.bar(df_put_wall.iloc[:top_n], x='symbol', y='min_gex')
-        chart1 = px.bar(df_put_wall.iloc[top_n:], x='symbol', y='min_gex')
-        chart2 = px.bar(df_call_wall.iloc[:top_n], x='symbol', y='max_gex')
-        chart3 = px.bar(df_call_wall.iloc[top_n:], x='symbol', y='max_gex')
-        chart4 = px.bar(df_net_gex.iloc[:top_n], x='symbol', y='dollar_gex')
-        chart5 = px.bar(df_net_gex.iloc[top_n:], x='symbol', y='dollar_gex')
+        df_put_wall  = df_walls.sort_values(by='put_wall_'  + by, ascending=True)
+        df_call_wall = df_walls.sort_values(by='call_wall_' + by, ascending=False)
+        chart0 = px.bar(df_put_wall,  x='symbol',  y=['put_wall_by_adv', 'put_wall_by_market_cap'])
+        chart1 = px.bar(df_put_wall,  x='symbol',  y=['put_wall_concentration'])
+        chart2 = px.bar(df_call_wall, x='symbol',  y=['call_wall_by_adv', 'call_wall_by_market_cap'])
+        chart3 = px.bar(df_call_wall, x='symbol',  y=['call_wall_concentration'])
+        chart4 = px.bar(df_walls.iloc[:top_n], x='symbol', y='dollar_gex')
+        chart5 = px.bar(df_walls.iloc[top_n:], x='symbol', y='dollar_gex')
         for _i, chart in enumerate([chart0, chart1, chart2, chart3, chart4, chart5]):
             for trace in chart.data:
                 fig.add_trace(trace, row=_i//2+1, col=_i%2+1)
         fig.show()
 
-    def plot_gex_profiles(self, strike_gex, total_net_gex, R=0.05, W=1200, H=600):
+    def plot_gex_profiles(self, strike_gex, df_walls, sort_by='put_wall_by_adv', R=0.05, W=1200, H=600):
         put_walls = {}
         call_walls = {}
-        for _row in total_net_gex.sort_values(by='min_gex').itertuples():
+        for _row in df_walls.sort_values(by=sort_by, ascending=sort_by[:3]=='put').itertuples():
             symbol = _row.symbol
             last_price = _row.lastPrice
             df = strike_gex[strike_gex.symbol == symbol]
-            flip_point, _, _ = self.find_gex_flip_point(strike_gex, total_net_gex, symbol)
-            min_gex = df.dollar_gex.min()
-            max_gex = df.dollar_gex.max()
+            flip_point, _, _ = self.find_gex_flip_point(strike_gex, df_walls, symbol)
+            min_gex = _row.min_gex
+            max_gex = _row.max_gex
             put_walls[symbol] = df.loc[df.dollar_gex.idxmin()].strike.item()
             call_walls[symbol] = df.loc[df.dollar_gex.idxmax()].strike.item()
             df = df[(df.strike >= (1 - R) * min(flip_point, last_price, put_walls[symbol])) & (df.strike <= (1 + R) * max(flip_point, last_price, call_walls[symbol]))]
             df_price = pd.DataFrame({'strike': [last_price]*2, 'spot_price': [min_gex, max_gex]})
-            df_flip = pd.DataFrame({'strike': [flip_point]*2, 'flip_point': [min_gex, max_gex]})
+            df_flip  = pd.DataFrame({'strike': [flip_point]*2, 'flip_point': [min_gex, max_gex]})
             df = pd.concat([df, df_price, df_flip])
-            _title = f'{symbol} Spot price: {last_price} Flip point: {flip_point:.2f} Put wall: {put_walls[symbol]} Call wall: {call_walls[symbol]}'
+            _r = df_walls.loc[_row.Index]
+            normalized_pw = ' '.join(['%.2f%%' % (_r['put_wall_'  + x]*100) for x in ['by_adv', 'by_market_cap', 'concentration']])
+            normalized_cw = ' '.join(['%.2f%%' % (_r['call_wall_' + x]*100) for x in ['by_adv', 'by_market_cap', 'concentration']])
+            _title = f'{symbol} Spot price: {last_price} Flip point: {flip_point:.2f} Put wall: {put_walls[symbol]} ({normalized_pw}), Call wall: {call_walls[symbol]} ({normalized_cw})'
             px.bar(df, x='strike', y=['dollar_gex', 'spot_price', 'flip_point'], barmode='group', title=_title, width=W, height=H).show()
         return put_walls, call_walls
 
-    def find_gex_flip_point(self, strike_gex, total_net_gex, symbol, chart=None, R=0.3):
-        last_price = total_net_gex[total_net_gex.symbol==symbol].lastPrice.iloc[0].item()
+    def find_gex_flip_point(self, strike_gex, df_walls, symbol, chart=None, R=0.3):
+        last_price = df_walls[df_walls.symbol==symbol].lastPrice.iloc[0].item()
         df = strike_gex[strike_gex.symbol==symbol]
         def get_hi_lo_df(fp_offset):
             flip_point = last_price + fp_offset

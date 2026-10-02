@@ -130,6 +130,10 @@ def save_cookie_files(cookie_nv_pairs, data_dir):
 
 def main(sys_argv):
     import time
+    from ntfy import Ntfy
+    from socket import gethostname
+    hostname = gethostname()
+    ntfyer = Ntfy('m_printer_c00kie_alerts')
     db_path, data_dir, dest_dir = sys_argv[1:4]
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     cursor = conn.cursor()
@@ -140,12 +144,15 @@ def main(sys_argv):
     cookie_txt_file = save_cookie_files(nv_pairs, data_dir)
     if not (cookie_txt_file and os.path.exists(cookie_txt_file) and os.path.getsize(cookie_txt_file) > 1000):
         print('Failedd to extract cookies')
+        ntfyer.send_alert(f'{hostname} failed to extract cookies')
         return
     if time.time() - os.path.getmtime(cookie_txt_file) <= 5:
         os.system(f'/usr/bin/scp {cookie_txt_file} {dest_dir}')
+        ntfyer.send_alert(f'{hostname}:{cookie_txt_file} sent to {dest_dir}')
         return True
     else:
         print(f'{cookie_txt_file} is stale')
+        ntfyer.send_alert(f'{hostname}:{cookie_txt_file} is stale')
         return
 
 if __name__ == '__main__':
