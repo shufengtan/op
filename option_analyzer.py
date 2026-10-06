@@ -730,61 +730,6 @@ class OptionAnalyzer:
                     symlist.append(symbol)
         return symlist
 
-    def rank_put_spreads(self, dfp_leg_1, risk_limit=100_000, max_oi_ratio=0.1, leg_2_ratio_ub=0.05, buying_power=500_000):
-        symlist = dfp_leg_1.symbol.unique()
-        df_quotes, df_shortint, df_vola = self.get_quote_df(symlist)
-        df_raw = self.build_option_df(symlist)
-        leg_2_cols = ['symbol', 'dte', 'strike', 'mid', 'Delta', 'OpenInterest']
-        dfp_leg_2 = self.select_options_by_type(df_raw, 'put').loc[:, leg_2_cols]
-        dfp_leg_2 = dfp_leg_2.rename(columns=dict([(c, c+'_2') for c in leg_2_cols[2:]]))
-        _df = dfp_leg_1.merge(dfp_leg_2, how='left', on=['symbol', 'dte'])
-        _df = _df[(_df.strike_2 < _df.strike) & (_df.mid_2 <= leg_2_ratio_ub*_df.mid)]
-        _df = _df.sort_values(by=['dthProfit', 'symbol', 'dte', 'strike', 'strike_2'], ascending=[False, True, True, True, False])
-        _df['max_gain'] = 100*(_df['mid'] - _df['mid_2']) - 1.3
-        _df['max_loss'] = 100*(_df['strike'] - _df['strike_2']) - _df['max_gain']
-        n_options_1 = np.floor(risk_limit/_df['max_loss'])
-        n_options_2 = np.floor(buying_power/_df['strike']/100)
-        n_options_3 = np.floor(_df.loc[:, ['OpenInterest', 'OpenInterest_2']] * max_oi_ratio).min(axis=1)
-        _df['n_options'] = np.minimum(np.minimum(n_options_1, n_options_2), n_options_3).astype(int)
-        _df['r1'] = _df['strike']/(_df['strike'] - _df['strike_2'])
-        _df['r2'] = (_df['mid'] - _df['mid_2'])/_df['mid']
-        _df['multiplier'] = _df['r1']*_df['r2']
-        _df['dthProfit_2'] = _df['dthProfit'] * _df['multiplier']
-        _df['cost'] = _df.n_options * (_df.max_loss + 100*_df.mid_2)
-        _df['worst_case'] = _df.n_options*100*_df.strike
-        _df['SymbolExpDt'] = _df.symbol + ':' + _df.expDt
-        _df['credit'] = _df.n_options * _df.max_gain
-        lead_cols = ['SymbolExpDt', 'dte', 'strike',  'strike_2', 'dthProfit_2', 'dthStrikeMargin', 'credit', 'dthProfit', 'n_options', 'worst_case', 'multiplier', 'cost', 'lastPrice', 'mid', 'mid_2', 'OpenInterest', 'OpenInterest_2']
-        cols = lead_cols + [_ for _ in _df.columns if _ not in lead_cols]
-        return _df.loc[:, cols].sort_values(by='credit', ascending=False).drop(columns=['symbol', 'expDt'])
-
-    def get_rows_with_closest_value_in_column(self, df, col, target_value):
-        groupers = [c for c in df.columns if c != col]
-        df = df.drop_duplicates(subset=groupers + [col])
-        tmp_diff_col = '__diff'
-        df[tmp_diff_col] = (df[col] - target_value).abs()
-        idx = df.groupby(groupers)[tmp_diff_col].idxmin() if len(groupers) > 0 else df.loc[:, [tmp_diff_col]].idxmin()
-        return df.loc[idx].drop(columns=[tmp_diff_col])
-
-    def select_pds_deltas(self, dfcp, dte_lb, dte_ub):
-        _df = dfcp[(dfcp.type=='P') & (dfcp.dte >= dte_lb) & (dfcp.dte <= dte_ub)]
-        dfstrike_atm = self.get_rows_with_closest_value_in_column(_df.loc[:, ['symbol', 'dte', 'strike', 'lastPrice']], 'strike', _df.lastPrice).set_index(['symbol', 'dte'])
-        _df = _df.loc[:, ['symbol', 'dte', 'Delta']]
-        dfdelta_25 = self.get_rows_with_closest_value_in_column(_df[_df.Delta >= -0.25], 'Delta', -0.25).set_index(['symbol', 'dte'])
-        dfdelta_50 = self.get_rows_with_closest_value_in_column(_df[_df.Delta >= -0.6],  'Delta', -0.5).set_index(['symbol', 'dte'])
-        dfdelta_5  = self.get_rows_with_closest_value_in_column(_df[_df.Delta >= -0.06], 'Delta', -0.05).set_index(['symbol', 'dte'])
-        df_join = dfstrike_atm.join(dfdelta_25).join(dfdelta_50, rsuffix='_50').join(dfdelta_5, rsuffix='_5')
-        return df_join.rename(columns={'strike': 'atm_strike', 'Delta': 'Delta_25'})
-
-    def put_debit_spread(self, dfpds, symbol, dte, dfcp, cols=['strike', 'Delta', 'mid', 'OpenInterest', 'ImpVola']):
-        delta_dict = dfpds.loc[(symbol, dte)].to_dict()
-        atm_strike = delta_dict.pop('atm_strike')
-        deltas = list(delta_dict.values())
-        _f = (dfcp.strike==atm_strike) & (dfcp.type=='P')
-        for _d in deltas:
-            _f = _f | (dfcp.Delta==_d)
-        return dfcp[(dfcp.symbol==symbol) & (dfcp.dte==dte) & (_f)].loc[:, cols]
-
     def plot_metric_subtotals_in_one_row(self, df, grouper, metric_list, shared_y=True, log_y_threshold=500, horizontal_spacing=0.02):
         fig = make_subplots(rows=1, cols=len(metric_list), subplot_titles=metric_list, shared_yaxes=shared_y, horizontal_spacing=horizontal_spacing)
         fig.update_layout(height=400)
