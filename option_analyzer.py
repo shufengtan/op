@@ -590,21 +590,32 @@ class OptionAnalyzer:
 
         return df_walls.reset_index(), strike_gex
 
-    def plot_gex_walls(self, df_walls, by='by_adv', top_n=4, H=800, W=2000):
-        titles = ['Put Walls by ADV and Market Cap', 'Put Walls by Concentration'] + ['Call Walls by ADV and Market Cap', 'Call Walls by Concentration'] + ['Net GEX']*2
-        fig = make_subplots(rows=3, cols=2, subplot_titles=titles, shared_yaxes=False)
+    def plot_gex_walls(self, df_walls, by='by_adv', H=400, W=2000):
+        for option_type in ['put', 'call']:
+            titles = [f'{option_type.upper()} Walls by ADV and Concentration', f'{option_type.upper()} Walls by Market Cap']
+            fig = make_subplots(rows=1, cols=2, subplot_titles=titles, shared_yaxes=False)
+            fig.update_layout(width=W, height=H)
+            df_wall = df_walls.sort_values(by=f'{option_type}_wall_' + by, ascending=(option_type=='put'))
+            charts = [
+                px.bar(df_wall,  x='symbol',  y=[f'{option_type}_wall_by_adv', f'{option_type}_wall_concentration']),
+                px.bar(df_wall,  x='symbol',  y=[f'{option_type}_wall_by_market_cap'])
+            ]
+            for _i, chart in enumerate(charts):
+                for trace in chart.data:
+                    fig.add_trace(trace, row=1, col=_i+1)
+            fig.show()
+        titles = ['Net GEX', 'Net GEX']
+        fig = make_subplots(rows=1, cols=2, subplot_titles=titles, shared_yaxes=False)
         fig.update_layout(width=W, height=H)
-        df_put_wall  = df_walls.sort_values(by='put_wall_'  + by, ascending=True)
-        df_call_wall = df_walls.sort_values(by='call_wall_' + by, ascending=False)
-        chart0 = px.bar(df_put_wall,  x='symbol',  y=['put_wall_by_adv', 'put_wall_by_market_cap'])
-        chart1 = px.bar(df_put_wall,  x='symbol',  y=['put_wall_concentration'])
-        chart2 = px.bar(df_call_wall, x='symbol',  y=['call_wall_by_adv', 'call_wall_by_market_cap'])
-        chart3 = px.bar(df_call_wall, x='symbol',  y=['call_wall_concentration'])
-        chart4 = px.bar(df_walls.iloc[:top_n], x='symbol', y='dollar_gex')
-        chart5 = px.bar(df_walls.iloc[top_n:], x='symbol', y='dollar_gex')
-        for _i, chart in enumerate([chart0, chart1, chart2, chart3, chart4, chart5]):
+        _df = df_walls.sort_values(by='dollar_gex')
+        n_left = _df.shape[0]//2
+        charts = [
+            px.bar(_df.iloc[:n_left], x='symbol', y='dollar_gex'),
+            px.bar(_df.iloc[n_left:], x='symbol', y='dollar_gex')
+        ]
+        for _i, chart in enumerate(charts):
             for trace in chart.data:
-                fig.add_trace(trace, row=_i//2+1, col=_i%2+1)
+                fig.add_trace(trace, row=1, col=_i+1)
         fig.show()
 
     def plot_gex_profiles(self, strike_gex, df_walls, R=0.05, W=1200, H=600):
@@ -730,6 +741,41 @@ class OptionAnalyzer:
                     symlist.append(symbol)
         return symlist
 
+    def read_option_data_from_csv_files(self, data_dir, option_type, chain_dir):
+        os.system('sync > /dev/null 2>&1')
+        servers = sorted(set([f.split('~')[1] for f in glob(os.path.join(data_dir, f'{option_type}~*~*.csv'))]))
+        latest_option_files = [sorted(glob(os.path.join(data_dir, f'{option_type}~{svr}~*.csv')))[-1] for svr in servers]
+        print('\n'.join(['%40s ' % os.path.basename(_) + ' '.join(self.list_symbols_in_data_file(_)) for _ in latest_option_files]))
+        chain_file_mtimes = dict([(os.path.basename(_f), os.path.getmtime(_f)) for _f in glob(os.path.join(chain_dir, '*'))])
+        latest_symbol = sorted(chain_file_mtimes, key=chain_file_mtimes.get)[-1]
+        print('Last symbol:', latest_symbol, datetime.fromtimestamp(chain_file_mtimes[latest_symbol]).strftime('%F %T'))
+        df = pd.concat([pd.read_csv(_f) for _f in latest_option_files])
+        return df
+    
+    def short_liquidity_overview(self, df, dte_ub=45, delta_lb=-0.3, delta_ub=-0.2, oi_lb=10, oi_pctile=0.5):
+        _df = df[(df.dte <= dte_ub) & (df.Delta >= delta_lb) & (df.Delta <= delta_ub) & (df.OpenInterest >= oi_lb)]
+        oi_lb = pd.DataFrame(_df.groupby('symbol').OpenInterest.quantile(oi_pctile)).reset_index().rename(columns={'OpenInterest': 'oi_lb'})
+        _df = _df.merge(oi_lb, on='symbol', how='left')
+        _df = _df[_df.OpenInterest >= _df.oi_lb]
+        _g = _df.groupby('symbol')
+        _df_mean   = pd.DataFrame(_g.pctSpread.mean().round(2)).rename(columns={'pctSpread': 'mean_pctSpread'})
+        _df_median = pd.DataFrame(_g.pctSpread.median().round(2)).rename(columns={'pctSpread': 'median_pctSpread'})
+        _df = _df_mean.join(_df_median).sort_values(by='mean_pctSpread')
+        px.bar(_df, barmode='group', width=50*_df.shape[0]).show()
+        return _df
+
+    def leap_liquidity_overview(self, dfc, dte_lb=180, delta_lb=0.5, delta_ub=0.8, oi_lb=10, oi_pctile=0.5):
+        _df = dfc[(dfc.dte >= dte_lb) & (dfc.Delta >= delta_lb) & (dfc.Delta <= delta_ub) & (dfc.OpenInterest >= oi_lb)]
+        oi_lb = pd.DataFrame(_df.groupby('symbol').OpenInterest.quantile(oi_pctile)).reset_index().rename(columns={'OpenInterest': 'oi_lb'})
+        _df = _df.merge(oi_lb, on='symbol', how='left')
+        _df = _df[_df.OpenInterest >= _df.oi_lb]
+        _g = _df.groupby('symbol')
+        _df_mean   = pd.DataFrame(_g.pctSpread.mean().round(2)).rename(columns={'pctSpread': 'mean_pctSpread'})
+        _df_median = pd.DataFrame(_g.pctSpread.median().round(2)).rename(columns={'pctSpread': 'median_pctSpread'})
+        _df = _df_mean.join(_df_median).sort_values(by='mean_pctSpread')
+        px.bar(_df, barmode='group', width=50*_df.shape[0]).show()
+        return _df
+    
     def plot_metric_subtotals_in_one_row(self, df, grouper, metric_list, shared_y=True, log_y_threshold=500, horizontal_spacing=0.02):
         fig = make_subplots(rows=1, cols=len(metric_list), subplot_titles=metric_list, shared_yaxes=shared_y, horizontal_spacing=horizontal_spacing)
         fig.update_layout(height=400)
